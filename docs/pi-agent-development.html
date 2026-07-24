@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pi Agent 开发指南</title>
+<style>
+body { background: #f5faf6; color: #2d3a31; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; max-width: 820px; margin: 40px auto; padding: 0 20px; }
+h1 { font-size: 1.35em; border-bottom: 2px solid #c3dbcc; padding-bottom: 8px; }
+h2 { font-size: 1.2em; margin: 20px 0 10px; border-bottom: 1px solid #c3dbcc; padding-bottom: 4px; }
+h3 { font-size: 1.02em; margin: 16px 0 8px; }
+h4 { font-size: 0.95em; margin: 12px 0 6px; }
+p { margin: 6px 0; }
+ul, ol { margin: 4px 0; padding-left: 22px; }
+li { margin: 2px 0; }
+code { font-size: 0.88em; background: #e8f5ec; padding: 1px 4px; border-radius: 3px; font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; }
+pre { font-size: 0.8em; background: #e8f5ec; border: 1px solid #c3dbcc; border-radius: 6px; padding: 10px 14px; overflow-x: auto; line-height: 1.35; }
+pre code { background: transparent; padding: 0; font-size: 1em; }
+table { font-size: 0.9em; border-collapse: collapse; width: 100%; margin: 8px 0; }
+th, td { border: 1px solid #c3dbcc; padding: 6px 10px; text-align: left; }
+th { background: #e8f5ec; }
+strong { color: #1a2b22; }
+.card { background: #e8f5ec; border: 1px solid #c3dbcc; border-radius: 8px; padding: 14px 18px; margin: 12px 0; }
+.card h4 { margin: 0 0 6px; }
+.summary, .conclusions { background: #e8f5ec; border: 1px solid #c3dbcc; border-radius: 8px; padding: 14px 18px; margin: 16px 0; }
+.summary h3, .conclusions h3 { margin: 0 0 6px; }
+.detail { margin: 12px 0; padding-left: 4px; border-left: 3px solid #c3dbcc; padding-left: 12px; }
+.arrow { color: #5f7a6a; }
+.toc {
+  background: #e8f5ec;
+  border: 1px solid #c3dbcc;
+  border-radius: 8px;
+  padding: 14px 20px;
+  margin: 12px 0 16px;
+}
+.toc h2 { font-size: 1em; color: #1a4f2e; margin: 0 0 8px; border: none; padding: 0; background: none; }
+.toc > ol { margin: 0; list-style: none; counter-reset: toc; }
+.toc > ol > li { counter-increment: toc; margin: 3px 0; }
+.toc > ol > li::before { content: counter(toc) ". "; font-weight: 600; color: #1a4f2e; }
+.toc a { color: #236b3e; text-decoration: none; font-size: 0.9em; }
+.toc a:hover { text-decoration: underline; color: #1a4f2e; }
+</style>
+</head>
+<body>
+
+<h1>Pi Agent 开发指南</h1>
+
+<div class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#pkg-arch">包架构概览</a></li>
+    <li><a href="#interfaces">开发 Agent 所需 Package 与关键接口</a></li>
+    <li><a href="#agents">四种 Agent 实现方案</a></li>
+    <li><a href="#selection">选型指南</a></li>
+  </ol>
+</div>
+
+<p>本文档涵盖 Pi 各核心 Package 的角色与依赖关系、开发 Agent 需要使用的关键接口、以及四种典型 Agent 的完整实现方案。</p>
+
+<!-- ============================================================ -->
+<h2 id="pkg-arch">1. 包架构概览</h2>
+
+<p>Pi 是一个 monorepo，核心包共 5 个，按抽象层次从低到高排列：</p>
+
+<pre>packages/
+├── ai/          @earendil-works/pi-ai          统一 LLM API 层
+├── agent/       @earendil-works/pi-agent-core  通用 Agent 框架
+├── coding-agent/@earendil-works/pi-coding-agent完整编程 Agent (CLI+TUI+SDK)
+├── tui/         @earendil-works/pi-tui         终端 UI 库 (差分渲染)
+└── server/      @earendil-works/pi-server      实验性 RPC 服务</pre>
+
+<h3>1.1 依赖关系</h3>
+
+<pre>pi-ai              ← 无外部依赖，统一 LLM Provider 调用
+pi-agent-core      ← 依赖 pi-ai，提供 Agent 循环 + 工具执行框架
+pi-coding-agent    ← 依赖 pi-ai + pi-agent-core + pi-tui，全功能 CLI + SDK
+pi-server          ← 依赖 pi-coding-agent，RPC over HTTP</pre>
+
+<h3>1.2 各 Package 核心模块</h3>
+
+<div class="detail">
+<h4>pi-ai (<code>@earendil-works/pi-ai</code>)</h4>
+<p>统一调用 LLM Provider，包装 Anthropic、OpenAI、Bedrock、Google 等各种 API。</p>
+<table>
+<tr><th>模块</th><th>作用</th></tr>
+<tr><td><code>src/types.ts</code></td><td>核心类型：<code>Model&lt;T&gt;</code>、<code>Context</code>、<code>Message</code>、<code>AssistantMessage</code>、<code>Tool</code>、<code>StreamOptions</code></td></tr>
+<tr><td><code>src/models.ts</code></td><td><code>Models</code> 接口 + <code>Provider</code> 接口 + <code>createModels()</code> + <code>createProvider()</code></td></tr>
+<tr><td><code>src/models-store.ts</code></td><td><code>ModelsStore</code> / <code>InMemoryModelsStore</code>，持久化模型目录</td></tr>
+<tr><td><code>src/api/*.ts</code></td><td>各 API 实现（<code>openai-completions</code>、<code>anthropic-messages</code> 等）</td></tr>
+<tr><td><code>src/api/lazy.ts</code></td><td><code>lazyStream()</code> / <code>lazyApi()</code> — 延迟加载 API 模块</td></tr>
+<tr><td><code>src/providers/*.ts</code></td><td>各 Provider 工厂函数</td></tr>
+<tr><td><code>src/auth/*.ts</code></td><td>认证系统（OAuth、API Key、Credentials）</td></tr>
+<tr><td><code>compat.ts</code></td><td>向后兼容入口，暴露 <code>getModel()</code> 和 <code>streamSimple()</code></td></tr>
+</table>
+</div>
+
+<div class="detail">
+<h4>pi-agent-core (<code>@earendil-works/pi-agent-core</code>)</h4>
+<p>Agent 循环 + 工具执行框架，不依赖具体 LLM Provider。</p>
+<table>
+<tr><th>模块</th><th>作用</th></tr>
+<tr><td><code>src/agent.ts</code></td><td><code>Agent</code> 类 — 状态管理、事件、消息队列、steering/follow-up</td></tr>
+<tr><td><code>src/agent-loop.ts</code></td><td><code>runAgentLoop()</code> — 底层循环（LLM 调用 → 工具执行 → 循环/停止）</td></tr>
+<tr><td><code>src/types.ts</code></td><td><code>AgentTool</code>、<code>AgentState</code>、<code>AgentEvent</code>、<code>AgentContext</code>、<code>AgentMessage</code>、<code>StreamFn</code></td></tr>
+<tr><td><code>src/stream-fn.ts</code></td><td><code>StreamFn</code> 默认值设置</td></tr>
+<tr><td><code>src/harness/agent-harness.ts</code></td><td><code>AgentHarness</code> — 会话管理、compaction、skills、prompt templates</td></tr>
+<tr><td><code>src/harness/tools/</code></td><td>内置工具实现（<code>read</code>、<code>edit</code>、<code>bash</code>、<code>write</code>、<code>grep</code>）</td></tr>
+<tr><td><code>src/harness/session/</code></td><td>会话持久化（<code>JsonlRepo</code>、<code>MemoryRepo</code>、<code>JsonlStorage</code>）</td></tr>
+</table>
+</div>
+
+<div class="detail">
+<h4>pi-coding-agent (<code>@earendil-works/pi-coding-agent</code>)</h4>
+<p>完整编程 Agent，将 <code>pi-ai</code> + <code>pi-agent-core</code> 组合成可用的 CLI 和 SDK。</p>
+<table>
+<tr><th>模块</th><th>作用</th></tr>
+<tr><td><code>src/core/sdk.ts</code></td><td><code>createAgentSession()</code> 一站式入口</td></tr>
+<tr><td><code>src/core/agent-session.ts</code></td><td><code>AgentSession</code> 类 — 高级会话接口</td></tr>
+<tr><td><code>src/core/agent-session-runtime.ts</code></td><td><code>AgentSessionRuntime</code> — 运行时生命周期</td></tr>
+<tr><td><code>src/core/model-runtime.ts</code></td><td><code>ModelRuntime</code> — 模型/Provider/认证管理</td></tr>
+<tr><td><code>src/core/settings-manager.ts</code></td><td><code>SettingsManager</code> — 配置管理</td></tr>
+<tr><td><code>src/core/session-manager.ts</code></td><td><code>SessionManager</code> — 会话持久化</td></tr>
+<tr><td><code>src/core/extensions/</code></td><td>扩展系统（<code>ExtensionRunner</code>、<code>defineTool()</code>）</td></tr>
+<tr><td><code>examples/sdk/</code></td><td>13 个 SDK 示例（01-minimal.ts ~ 13-session-runtime.ts）</td></tr>
+<tr><td><code>examples/extensions/</code></td><td>90+ 扩展示例</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="interfaces">2. 开发 Agent 所需 Package 与关键接口</h2>
+
+<h3>2.1 方案 A：使用 pi-coding-agent SDK（推荐）</h3>
+<p>只需要引入一个 Package：</p>
+
+<pre><code>import {
+  createAgentSession,       // 一键创建带 session 的 Agent
+  ModelRuntime,             // 管理模型 Provider、认证、列表刷新
+  SessionManager,           // 会话持久化（jsonl 文件或内存）
+  SettingsManager,          // 管理 compaction、retry 等设置
+  defineTool,               // 定义自定义工具
+  type ToolDefinition,      // 工具定义类型
+  type ResourceLoader,      // 加载 skills、extensions、prompts
+  type AgentSessionEvent,   // 会话事件类型
+} from "@earendil-works/pi-coding-agent";</code></pre>
+
+<table>
+<tr><th>接口/类</th><th>用途</th></tr>
+<tr><td><code>createAgentSession()</code></td><td>配置 model、tools、cwd、settings 后返回 <code>AgentSession</code></td></tr>
+<tr><td><code>ModelRuntime</code></td><td>管理 Provider 注册、API Key 注入、模型刷新</td></tr>
+<tr><td><code>SessionManager</code></td><td>控制会话持久化行为（文件系统或内存）</td></tr>
+<tr><td><code>SettingsManager</code></td><td>配置 compaction、retry 策略等</td></tr>
+<tr><td><code>defineTool()</code></td><td>以类型安全方式定义自定义工具</td></tr>
+<tr><td><code>ResourceLoader</code></td><td>资源加载器，可完全自定义或使用默认加载器</td></tr>
+</table>
+
+<h3>2.2 方案 B：使用 pi-agent-core（轻量，自定义 Provider）</h3>
+
+<pre><code>import {
+  Agent,                    // Agent 类 — 状态、事件、队列
+  type AgentTool,           // 工具定义（低层接口）
+  type AgentEvent,          // Agent 事件
+  type AgentState,          // Agent 状态
+  type StreamFn,            // 流函数类型
+  type ThinkingLevel,       // 思考级别
+} from "@earendil-works/pi-agent-core";
+
+// 需要自行提供 StreamFn，可以来自 pi-ai：
+import { createModels } from "@earendil-works/pi-ai";
+// 或使用 compat API
+import { getModel, streamSimple } from "@earendil-works/pi-ai/compat";</code></pre>
+
+<h3>2.3 方案 C：纯 pi-ai（只有 LLM 调用，无工具）</h3>
+
+<pre><code>import { createModels, createProvider, type Models, type Provider } from "@earendil-works/pi-ai";
+// 或 compat API（更简洁）：
+import { getModel, streamSimple, completeSimple } from "@earendil-works/pi-ai/compat";</code></pre>
+
+<!-- ============================================================ -->
+<h2 id="agents">3. 四种 Agent 实现方案</h2>
+
+<h3>3.1 纯 LLM 调用</h3>
+<p>无工具，无循环，直接调用 LLM。适合问答、文本生成。</p>
+
+<pre><code>import { getModel, streamSimple } from "@earendil-works/pi-ai/compat";
+
+const model = getModel("anthropic", "claude-sonnet-4-5");
+if (!model) throw new Error("Model not found");
+
+const stream = streamSimple(model, {
+  messages: [{ role: "user", content: "用一句中文说 hello", timestamp: Date.now() }],
+});
+
+for await (const event of stream) {
+  if (event.type === "text_delta") process.stdout.write(event.delta);
+}
+const response = await stream.result();
+console.log("\n使用量:", response.usage);</code></pre>
+
+<p>如果用新 API（<code>createModels()</code>）：</p>
+
+<pre><code>import { createModels } from "@earendil-works/pi-ai";
+import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+
+const models = createModels();
+models.setProvider(anthropicProvider());
+models.setRuntimeApiKey("anthropic", process.env.ANTHROPIC_API_KEY);
+
+const model = models.getModel("anthropic", "claude-sonnet-4-5");
+const context = {
+  messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
+};
+const msg = await models.completeSimple(model, context);
+console.log(msg.content);</code></pre>
+
+<h3>3.2 告警分析 Agent</h3>
+<p>只读工具 + 自定义数据源工具，无写入权限。适合自动化运维场景。</p>
+
+<pre><code>import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import { getModel } from "@earendil-works/pi-ai/compat";
+import { defineTool } from "@earendil-works/pi-coding-agent";
+
+// 自定义工具：获取告警数据
+const fetchAlertsTool = defineTool({
+  name: "fetch_alerts",
+  label: "Fetch Alerts",
+  description: "获取最近 N 条告警数据",
+  parameters: {
+    type: "object",
+    properties: {
+      count: { type: "number" },
+      severity: { type: "string", enum: ["critical", "warning", "info"] },
+    },
+    required: ["count"],
+  },
+  execute: async (params) => {
+    const alerts = [
+      { severity: "critical", message: "CPU 98%", source: "web-01" },
+      { severity: "warning", message: "磁盘剩余 12%", source: "db-02" },
+    ];
+    return {
+      content: [{ type: "text", text: JSON.stringify(alerts, null, 2) }],
+      details: { count: alerts.length },
+    };
+  },
+});
+
+// 自定义工具：查询运行手册
+const lookupRunbookTool = defineTool({
+  name: "lookup_runbook",
+  label: "Lookup Runbook",
+  description: "根据告警类型查找处理手册",
+  parameters: {
+    type: "object",
+    properties: { alertType: { type: "string" } },
+    required: ["alertType"],
+  },
+  execute: async (params) => {
+    const runbooks: Record&lt;string, string&gt; = {
+      high_cpu: "1. 检查活跃进程\n2. 查看最近部署",
+      disk_full: "1. 清理日志\n2. 扩容磁盘",
+    };
+    return {
+      content: [{ type: "text", text: runbooks[params.alertType] ?? "未找到手册" }],
+      details: {},
+    };
+  },
+});
+
+const model = getModel("anthropic", "claude-sonnet-4-5")!;
+const { session } = await createAgentSession({
+  model,
+  tools: ["read", "grep"],  // 只读 — 安全
+  customTools: [fetchAlertsTool, lookupRunbookTool],
+  sessionManager: SessionManager.inMemory(),
+});
+
+session.subscribe((event) => {
+  if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta")
+    process.stdout.write(event.assistantMessageEvent.delta);
+});
+
+await session.prompt("分析 web-01 上的告警并给出处理建议");
+session.dispose();</code></pre>
+
+<h3>3.3 自动问答机器人 Agent</h3>
+<p>使用 <code>Agent</code> 类（最小依赖），利用 <code>steer()</code> / <code>continue()</code> 实现多轮对话。适合客服、内部支持。</p>
+
+<pre><code>import { Agent } from "@earendil-works/pi-agent-core";
+import { getModel, streamSimple } from "@earendil-works/pi-ai/compat";
+
+const searchTool = {
+  name: "search_knowledge_base",
+  label: "Search KB",
+  description: "在知识库中搜索相关内容",
+  parameters: {
+    type: "object",
+    properties: { query: { type: "string" }, topK: { type: "number" } },
+    required: ["query"],
+  },
+  execute: async (_id, params) => {
+    const results = [
+      { title: "如何重置密码", url: "https://wiki.example.com/reset" },
+    ].filter(r =&gt; r.title.includes(params.query));
+    return {
+      content: [{ type: "text", text: JSON.stringify(results.slice(0, params.topK ?? 2)) }],
+      details: {},
+    };
+  },
+};
+
+const agent = new Agent({
+  streamFn: streamSimple,
+  initialState: {
+    systemPrompt: "你是内部技术支持。简洁、步骤清晰。",
+    model: getModel("anthropic", "claude-sonnet-4-5")!,
+    tools: [searchTool],
+  },
+  // 审计工具调用
+  beforeToolCall: async (ctx) =&gt; {
+    console.log(`[AUDIT] ${ctx.toolCall.name}`, ctx.args);
+  },
+});
+
+agent.subscribe((event) =&gt; {
+  if (event.type === "message_update" &amp;&amp; event.assistantMessageEvent.type === "text_delta")
+    process.stdout.write(event.assistantMessageEvent.delta);
+});
+
+// 多轮对话
+await agent.prompt("我忘记密码了，怎么重置？");
+await agent.waitForIdle();
+
+agent.steer({ role: "user", content: [{ type: "text", text: "重置后需要重新登录 VPN 吗？" }], timestamp: Date.now() });
+await agent.continue();
+await agent.waitForIdle();</code></pre>
+
+<h3>3.4 代码审查 Agent</h3>
+<p>最复杂的场景：访问 Git diff、运行 linter、读写文件、按标准审查。需要自定义工具 + 内建读写工具的组合。</p>
+
+<pre><code>import { createAgentSession, SessionManager, defineTool } from "@earendil-works/pi-coding-agent";
+import { getModel } from "@earendil-works/pi-ai/compat";
+import { execSync } from "node:child_process";
+
+// 1. Git Diff 工具
+const gitDiffTool = defineTool({
+  name: "git_diff",
+  label: "Git Diff",
+  description: "获取当前分支与目标分支的代码变更",
+  parameters: {
+    type: "object",
+    properties: {
+      targetBranch: { type: "string", default: "main" },
+      path: { type: "string" },
+    },
+  },
+  execute: async (params) =&gt; {
+    const target = params.targetBranch ?? "main";
+    const diff = execSync(`git diff ${target}...HEAD${params.path ? ` -- ${params.path}` : ""}`, {
+      encoding: "utf-8", maxBuffer: 10 * 1024 * 1024,
+    });
+    return { content: [{ type: "text", text: diff.slice(0, 50000) }], details: {} };
+  },
+});
+
+// 2. Lint 检查工具
+const lintCheckTool = defineTool({
+  name: "lint_check",
+  label: "Lint Check",
+  description: "对指定文件运行 linter",
+  parameters: {
+    type: "object",
+    properties: {
+      filePath: { type: "string" },
+      linter: { type: "string", enum: ["biome", "eslint"], default: "biome" },
+    },
+    required: ["filePath"],
+  },
+  execute: async (params) =&gt; {
+    try {
+      const output = execSync(`npx ${params.linter} ${params.filePath} 2>&1`, { encoding: "utf-8" });
+      return { content: [{ type: "text", text: output || "无 lint 问题" }], details: {} };
+    } catch (e) {
+      return { content: [{ type: "text", text: String(e.stderr || e.stdout || e) }], details: {} };
+    }
+  },
+});
+
+// 3. 审查标准规则
+const standardsTool = defineTool({
+  name: "get_review_standards",
+  label: "Review Standards",
+  description: "获取项目的代码审查标准",
+  parameters: { type: "object", properties: {} },
+  execute: async () =&gt; ({
+    content: [{
+      type: "text",
+      text: [
+        "- 优先用 interface 而非 type",
+        "- 函数不超过 50 行",
+        "- 所有公共 API 必须有 JSDoc",
+        "- 严禁 any（除非注释说明）",
+      ].join("\n"),
+    }],
+    details: {},
+  }),
+});
+
+const model = getModel("anthropic", "claude-sonnet-4-5")!;
+const { session } = await createAgentSession({
+  model,
+  cwd: process.cwd(),
+  tools: ["read", "grep", "edit", "write"],
+  customTools: [gitDiffTool, lintCheckTool, standardsTool],
+  sessionManager: SessionManager.inMemory(),
+});
+
+session.subscribe((event) =&gt; {
+  if (event.type === "message_update" &amp;&amp; event.assistantMessageEvent.type === "text_delta")
+    process.stdout.write(event.assistantMessageEvent.delta);
+});
+
+await session.prompt(`请审查当前分支的变更：
+1. 用 git_diff 获取变更
+2. 用 get_review_standards 获取标准
+3. 逐文件审查
+4. 输出审查纪要`);
+
+session.dispose();</code></pre>
+
+<!-- ============================================================ -->
+<h2 id="selection">4. 选型指南</h2>
+
+<table>
+<tr><th>场景</th><th>推荐 Package</th><th>核心 API</th></tr>
+<tr><td>纯 LLM 调用（无工具）</td><td><code>pi-ai</code></td><td><code>streamSimple()</code> / <code>completeSimple()</code></td></tr>
+<tr><td>简单 Agent + 自定义工具</td><td><code>pi-agent-core</code></td><td><code>Agent</code> + <code>AgentTool</code> + <code>streamFn</code></td></tr>
+<tr><td>全功能编程 Agent</td><td><code>pi-coding-agent</code> (SDK)</td><td><code>createAgentSession()</code> + <code>defineTool()</code></td></tr>
+<tr><td>嵌入式/服务端 Agent</td><td><code>pi-agent-core</code> + <code>createModels()</code></td><td><code>Agent</code> + <code>Models.streamSimple()</code></td></tr>
+<tr><td>告警分析 Agent</td><td><code>pi-coding-agent</code></td><td><code>defineTool()</code> + 只读内建工具</td></tr>
+<tr><td>问答机器人</td><td><code>pi-agent-core</code></td><td><code>Agent</code> + <code>steer()</code>/<code>continue()</code></td></tr>
+<tr><td>代码审查 Agent</td><td><code>pi-coding-agent</code></td><td><code>defineTool()</code> + 内建读写工具</td></tr>
+</table>
+
+<div class="summary">
+<h3>关键设计原则</h3>
+<ul>
+<li><strong>抽象分层</strong>：<code>pi-ai</code> → <code>pi-agent-core</code> → <code>pi-coding-agent</code> 逐层封装，下层不依赖上层。</li>
+<li><strong>工具即接口</strong>：自定义工具通过 <code>defineTool()</code> 或 <code>AgentTool</code> 接口注册，Agent 循环自动调度。</li>
+<li><strong>安全边界</strong>：<code>Tools</code> 参数控制 Agent 能访问的资源，配合 <code>beforeToolCall</code> 实现细粒度权限。</li>
+<li><strong>事件驱动</strong>：<code>subscribe()</code> 暴露完整生命周期事件，适合 UI 渲染和日志记录。</li>
+<li><strong>多轮对话</strong>：<code>steer()</code>（运行中注入）+ <code>followUp()</code>（结束后注入）覆盖所有对话流程。</li>
+<li><strong>配置弹性</strong>：从 <code>createAgentSession()</code> 一键启动到 <code>Agent</code> 类完全自定义，适应不同需求。</li>
+</ul>
+</div>
+
+</body>
+</html>

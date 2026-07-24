@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pi AI 抽象层架构分析</title>
+<style>
+body {
+    background: #f5faf6;
+    color: #2d3a31;
+    font: 13px/1.45 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px;
+}
+h1 { font-size: 1.35em; border-bottom: 2px solid #c3dbcc; padding-bottom: 8px; margin-top: 0; }
+h2 { font-size: 1.2em; margin: 24px 0 8px; padding: 6px 0; border-bottom: 1px solid #c3dbcc; }
+h3 { font-size: 1.02em; margin: 16px 0 6px; }
+h4 { font-size: 0.95em; margin: 10px 0 4px; }
+p { margin: 6px 0; }
+a { color: #1a7a3a; text-decoration: none; }
+a:hover { text-decoration: underline; }
+pre {
+    background: #e8f5ec;
+    border: 1px solid #c3dbcc;
+    border-radius: 4px;
+    padding: 10px 14px;
+    font: 0.8em/1.4 "SF Mono", "Fira Code", monospace;
+    overflow-x: auto;
+}
+code {
+    background: #e8f5ec;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.88em;
+}
+pre code { background: none; padding: 0; font-size: 1em; }
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9em;
+    margin: 8px 0;
+}
+th, td {
+    border: 1px solid #c3dbcc;
+    padding: 6px 10px;
+    text-align: left;
+}
+th { background: #e8f5ec; font-weight: 600; }
+blockquote {
+    border-left: 3px solid #c3dbcc;
+    margin: 10px 0;
+    padding: 4px 14px;
+    background: #e8f5ec;
+    border-radius: 2px;
+}
+ul, ol { margin: 4px 0; padding-left: 22px; }
+li { margin: 2px 0; }
+hr { border: none; border-top: 1px solid #c3dbcc; margin: 20px 0; }
+.toc {
+  background: #e8f5ec;
+  border: 1px solid #c3dbcc;
+  border-radius: 8px;
+  padding: 14px 20px;
+  margin: 12px 0 16px;
+}
+.toc h2 { font-size: 1em; color: #1a4f2e; margin: 0 0 8px; border: none; padding: 0; background: none; }
+.toc > ol { margin: 0; list-style: none; counter-reset: toc; }
+.toc > ol > li { counter-increment: toc; margin: 3px 0; }
+.toc > ol > li::before { content: counter(toc) ". "; font-weight: 600; color: #1a4f2e; }
+.toc a { color: #236b3e; text-decoration: none; font-size: 0.9em; }
+.toc a:hover { text-decoration: underline; color: #1a4f2e; }
+</style>
+</head>
+<body>
+
+<h1>Pi AI 抽象层架构分析</h1>
+
+<blockquote>
+本文分析 <code>packages/ai</code> 包的设计，它如何将不同 LLM 提供商（Anthropic、OpenAI、Google、DeepSeek 等）的差异抽象为统一的编程接口。
+</blockquote>
+
+<hr>
+
+<div class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#overview">整体定位</a></li>
+    <li><a href="#arch">架构概览</a></li>
+    <li><a href="#toolmessage">ToolMessage 统一</a></li>
+    <li><a href="#streaming">LLM Streaming 统一</a></li>
+    <li><a href="#thinking">Thinking/Reasoning 统一</a></li>
+    <li><a href="#cache">Prompt Cache 统一</a></li>
+    <li><a href="#adapter">Adapter 模式详解</a></li>
+    <li><a href="#summary">总结</a></li>
+  </ol>
+</div>
+
+<hr>
+
+<h2 id="overview">整体定位</h2>
+
+<p><code>packages/ai</code> 是 pi 的 LLM 抽象层，核心职责是<strong>屏蔽不同 LLM 提供商在协议、数据格式、能力上的差异</strong>，向消费方（<code>coding-agent</code>、<code>tui</code>、extension）提供一套统一的数据类型、流协议和调用接口。</p>
+
+<pre><code>coding-agent / tui / extension  &larr;  消费方
+        |
+   packages/ai                    &larr;  统一抽象层
+        |
+   Anthropic / OpenAI / Google / ...  &larr;  后端 API</code></pre>
+
+<hr>
+
+<h2 id="arch">架构概览</h2>
+
+<p>核心文件及职责：</p>
+
+<table>
+<tr><th>文件</th><th>职责</th></tr>
+<tr><td><code>src/types.ts</code></td><td>所有统一数据类型的定义</td></tr>
+<tr><td><code>src/utils/event-stream.ts</code></td><td>统一的流式事件协议（<code>AssistantMessageEventStream</code>）</td></tr>
+<tr><td><code>src/api/anthropic-messages.ts</code></td><td>Anthropic Messages API 适配器</td></tr>
+<tr><td><code>src/api/openai-responses.ts</code></td><td>OpenAI Responses API 适配器</td></tr>
+<tr><td><code>src/api/openai-completions.ts</code></td><td>OpenAI Chat Completions API 适配器</td></tr>
+<tr><td><code>src/api/openai-responses-shared.ts</code></td><td>OpenAI Responses 消息转换 + 流处理</td></tr>
+<tr><td><code>src/api/transform-messages.ts</code></td><td>跨提供商的工具调用 ID 归一化</td></tr>
+<tr><td><code>src/api/simple-options.ts</code></td><td>通用选项构造 + thinking 预算调整</td></tr>
+<tr><td><code>src/api/openai-prompt-cache.ts</code></td><td>OpenAI 风格 prompt cache key 处理</td></tr>
+<tr><td><code>src/models.ts</code></td><td>模型元数据管理、成本计算</td></tr>
+<tr><td><code>src/providers/</code></td><td>各提供商注册（含模型目录 + API 绑定）</td></tr>
+</table>
+
+<hr>
+
+<h2 id="toolmessage">1. ToolMessage 统一</h2>
+
+<h3>差异点</h3>
+
+<p>不同 API 对工具调用（tool call / tool result）的 wire format、ID 约束和消息角色完全不同。</p>
+
+<table>
+<tr><th>维度</th><th>Anthropic Messages</th><th>OpenAI Responses</th><th>OpenAI Chat Completions</th></tr>
+<tr><td>tool call 格式</td><td><code>content_block</code> 中 <code>type: "tool_use"</code>, <code>id: "toolu_xxx"</code>, <code>input: {}</code></td><td><code>response.output_item</code> 中 <code>type: "function_call"</code>, <code>call_id</code> + <code>id</code> 分离</td><td><code>choices[0].delta.tool_calls</code> 中 <code>function.name + arguments</code></td></tr>
+<tr><td>tool result 角色</td><td><code>role: "user"</code>，<code>content: [{type: "tool_result", ...}]</code></td><td><code>type: "function_call_output"</code>, <code>call_id</code> 匹配</td><td><code>role: "tool"</code>, <code>tool_call_id</code> 匹配</td></tr>
+<tr><td>ID 约束</td><td><code>^[a-zA-Z0-9_-]+$</code>，最长 64 字符</td><td>pipe 分隔 <code>call_id|item_id</code>，item_id 可 450+ 字符</td><td>最长 40 字符</td></tr>
+<tr><td>流式 tool call</td><td><code>input_json_delta</code> 推送 partial JSON</td><td><code>response.function_call_arguments.delta</code></td><td><code>delta.tool_calls[].function.arguments</code></td></tr>
+</table>
+
+<h3>统一方式：三层归一</h3>
+
+<h4>第一层：统一数据类型</h4>
+
+<pre><code><span class="hljs-keyword">export interface</span> <span class="hljs-title">ToolCall</span> {
+    type: <span class="hljs-string">"toolCall"</span>;
+    id: <span class="hljs-built_in">string</span>;              // 归一化后的 ID
+    name: <span class="hljs-built_in">string</span>;
+    arguments: Record&lt;<span class="hljs-built_in">string</span>, <span class="hljs-built_in">any</span>&gt;;
+    thoughtSignature?: <span class="hljs-built_in">string</span>;  // Google 特有，跨模型时丢弃
+}
+
+<span class="hljs-keyword">export interface</span> <span class="hljs-title">ToolResultMessage</span> {
+    role: <span class="hljs-string">"toolResult"</span>;
+    toolCallId: <span class="hljs-built_in">string</span>;      // 与 ToolCall.id 匹配
+    toolName: <span class="hljs-built_in">string</span>;
+    content: (TextContent | ImageContent)[];
+    isError: <span class="hljs-built_in">boolean</span>;
+    addedToolNames?: <span class="hljs-built_in">string</span>[];  // 延迟加载工具
+}</code></pre>
+
+<h4>第二层：统一的 ID 归一化</h4>
+
+<p>每个 API 适配器提供自己的 <code>normalizeToolCallId</code>，通过 <code>transformMessages()</code> 的回调注入。例如：</p>
+
+<ul>
+<li><code>openai-responses.ts</code> 的 <code>normalizeToolCallId</code>：处理 <code>call_id|item_id</code> 格式，跨模型时重建 item ID</li>
+<li><code>anthropic-messages.ts</code> 的 <code>normalizeToolCallId</code>：将 <code>[^a-zA-Z0-9_-]</code> 替换为 <code>_</code>，截断到 64 字符</li>
+<li><code>openai-completions.ts</code> 的 <code>normalizeToolCallId</code>：管道 ID 截断到 40 字符，必要时哈希去重</li>
+</ul>
+
+<p><code>transformMessages()</code> 预处理消息列表时，将 <code>AssistantMessage</code> 中的 tool call ID 逐一归一化，同时为后续 <code>ToolResultMessage</code> 建立反向映射。</p>
+
+<h4>第三层：消息格式转换</h4>
+
+<p>每个适配器的 <code>convertMessages</code> 将统一数据模型转为该后端原生格式：</p>
+
+<ul>
+<li><strong>Anthropic</strong>：<code>toolResult</code> 转为 <code>role: "user"</code> 的 <code>tool_result</code> content block，支持 <code>tool_reference</code> 延迟加载</li>
+<li><strong>OpenAI Responses</strong>：<code>toolResult</code> 转为 <code>function_call_output</code> item，支持 <code>custom_tool_call</code> 和 <code>tool_search_call</code></li>
+<li><strong>OpenAI Chat Completions</strong>：<code>toolResult</code> 转为 <code>role: "tool"</code> 消息</li>
+</ul>
+
+<hr>
+
+<h2 id="streaming">2. LLM Streaming 统一</h2>
+
+<h3>差异点</h3>
+
+<p>各 API 的 SSE 事件格式完全不同。</p>
+
+<table>
+<tr><th>API</th><th>流式事件</th><th>增量字段</th></tr>
+<tr><td>Anthropic</td><td><code>message_start</code>, <code>content_block_start</code>, <code>content_block_delta</code>, <code>message_delta</code></td><td><code>text_delta</code>, <code>thinking_delta</code>, <code>input_json_delta</code>, <code>signature_delta</code></td></tr>
+<tr><td>OpenAI Responses</td><td><code>response.output_text.delta</code>, <code>response.function_call_arguments.delta</code>, <code>response.reasoning_text.delta</code></td><td>各 <code>delta</code> 独立事件</td></tr>
+<tr><td>OpenAI Chat Completions</td><td><code>choices[0].delta.content</code>, <code>choices[0].delta.tool_calls</code>, <code>choices[0].delta.reasoning_content</code></td><td>单个 delta 对象多字段</td></tr>
+</table>
+
+<h3>统一方式</h3>
+
+<h4>统一事件协议</h4>
+
+<pre><code><span class="hljs-keyword">export type</span> <span class="hljs-title">AssistantMessageEvent</span> =
+    | { type: <span class="hljs-string">"start"</span>; partial: AssistantMessage }
+    | { type: <span class="hljs-string">"text_start"</span>; contentIndex: <span class="hljs-built_in">number</span>; partial: AssistantMessage }
+    | { type: <span class="hljs-string">"text_delta"</span>; contentIndex: <span class="hljs-built_in">number</span>; delta: <span class="hljs-built_in">string</span>; partial: AssistantMessage }
+    | { type: <span class="hljs-string">"text_end"</span>; contentIndex: <span class="hljs-built_in">number</span>; content: <span class="hljs-built_in">string</span>; partial: AssistantMessage }
+    | { type: <span class="hljs-string">"thinking_start"</span>; contentIndex: <span class="hljs-built_in">number</span>; partial: AssistantMessage }
+    | { type: <span class="hljs-string">"thinking_delta"</span>; contentIndex: <span class="hljs-built_in">number</span>; delta: <span class="hljs-built_in">string</span>; partial: AssistantMessage }
+    | { type: <span class="hljs-string">"thinking_end"</span>; contentIndex: <span class="hljs-built_in">number</span>; content: <span class="hljs-built_in">string</span>; partial: AssistantMessage }
+    | { type: <span class="hljs-string">"toolcall_start"</span>; contentIndex: <span class="hljs-built_in">number</span>; partial: AssistantMessage }
+    | { type: <span class="hljs-string">"toolcall_delta"</span>; contentIndex: <span class="hljs-built_in">number</span>; delta: <span class="hljs-built_in">string</span>; partial: AssistantMessage }
+    | { type: <span class="hljs-string">"toolcall_end"</span>; contentIndex: <span class="hljs-built_in">number</span>; toolCall: ToolCall; partial: AssistantMessage }
+    | { type: <span class="hljs-string">"done"</span>; reason: ...; message: AssistantMessage }
+    | { type: <span class="hljs-string">"error"</span>; reason: ...; error: AssistantMessage }</code></pre>
+
+<h4>统一流接口</h4>
+
+<pre><code><span class="hljs-keyword">export class</span> <span class="hljs-title">AssistantMessageEventStream</span> <span class="hljs-keyword">extends</span> <span class="hljs-title">EventStream</span>&lt;AssistantMessageEvent, AssistantMessage&gt; {
+    // 可通过 for await 消费事件序列
+    // 通过 .result() 获取最终 AssistantMessage
+}</code></pre>
+
+<h4>统一函数签名</h4>
+
+<p>所有适配器模块都导出两个同名函数：</p>
+
+<pre><code><span class="hljs-keyword">export const</span> stream: StreamFunction&lt;TApi, TOptions&gt; = (model, context, options?) =&gt; AssistantMessageEventStream;
+<span class="hljs-keyword">export const</span> streamSimple: StreamFunction&lt;TApi, SimpleStreamOptions&gt; = (model, context, options?) =&gt; AssistantMessageEventStream;</code></pre>
+
+<p><code>ProviderStreams</code> 接口将这两个函数绑定在一起：</p>
+
+<pre><code><span class="hljs-keyword">export interface</span> <span class="hljs-title">ProviderStreams</span> {
+    stream(model, context, options?): AssistantMessageEventStream;
+    streamSimple(model, context, options?): AssistantMessageEventStream;
+}</code></pre>
+
+<p>每个适配器内部将后端原生事件映射到统一事件：</p>
+
+<pre><code><span class="hljs-comment">// 伪代码：所有适配器的共同模式</span>
+<span class="hljs-keyword">export const</span> stream = (model, context, options) =&gt; {
+    <span class="hljs-keyword">const</span> stream = <span class="hljs-keyword">new</span> AssistantMessageEventStream();
+    (<span class="hljs-keyword">async</span> () =&gt; {
+        <span class="hljs-keyword">try</span> {
+            stream.push({ type: <span class="hljs-string">"start"</span>, partial: initialOutput });
+            <span class="hljs-keyword">for</span> <span class="hljs-keyword">await</span> (<span class="hljs-keyword">const</span> rawEvent <span class="hljs-keyword">of</span> rawApiStream) {
+                <span class="hljs-comment">// 将 rawEvent 映射为统一的 thinking_start/text_delta/toolcall_end 等</span>
+                stream.push(unifiedEvent);
+            }
+            stream.push({ type: <span class="hljs-string">"done"</span>, ... });
+            stream.end();
+        } <span class="hljs-keyword">catch</span> (e) {
+            stream.push({ type: <span class="hljs-string">"error"</span>, ... });
+            stream.end();
+        }
+    })();
+    <span class="hljs-keyword">return</span> stream;
+};</code></pre>
+
+<hr>
+
+<h2 id="thinking">3. Thinking/Reasoning 统一</h2>
+
+<h3>差异点</h3>
+
+<p>不同提供商对推理（thinking/reasoning）的参数名、控制值、启用方式完全不同。</p>
+
+<table>
+<tr><th>API</th><th>参数</th><th>值</th><th>备注</th></tr>
+<tr><td>Anthropic (adaptive)</td><td><code>thinking.type: "adaptive"</code> + <code>output_config.effort</code></td><td><code>low|medium|high|xhigh|max</code></td><td>Claude 4.6+</td></tr>
+<tr><td>Anthropic (legacy)</td><td><code>thinking.type: "enabled"</code> + <code>budget_tokens</code></td><td>token 数</td><td>Claude 3.x/4.x</td></tr>
+<tr><td>OpenAI Responses</td><td><code>reasoning.effort</code></td><td><code>low|medium|high|xhigh|max</code></td><td></td></tr>
+<tr><td>DeepSeek</td><td><code>thinking.type</code> + <code>reasoning_effort</code></td><td>binary + optional effort</td><td></td></tr>
+<tr><td>Qwen</td><td><code>enable_thinking: boolean</code></td><td>binary</td><td></td></tr>
+<tr><td>OpenRouter</td><td><code>reasoning.effort</code></td><td>归一化 effort</td><td></td></tr>
+<tr><td>Together</td><td><code>reasoning.enabled</code> + <code>reasoning_effort</code></td><td>binary + effort</td><td></td></tr>
+<tr><td>z.ai</td><td><code>thinking.type</code></td><td>binary</td><td></td></tr>
+<tr><td>llama.cpp 等</td><td><code>reasoning_content</code> 响应字段</td><td>仅响应，无请求参数</td><td></td></tr>
+<tr><td>Chat 模板</td><td><code>chat_template_kwargs.*</code></td><td>可配置变量</td><td>通过 <code>$var</code> 引用</td></tr>
+</table>
+
+<h3>统一方式：三层映射</h3>
+
+<h4>第一层：统一的 reasoning 层级枚举</h4>
+
+<pre><code><span class="hljs-keyword">export type</span> <span class="hljs-title">ThinkingLevel</span> = <span class="hljs-string">"minimal"</span> | <span class="hljs-string">"low"</span> | <span class="hljs-string">"medium"</span> | <span class="hljs-string">"high"</span> | <span class="hljs-string">"xhigh"</span> | <span class="hljs-string">"max"</span>;
+<span class="hljs-keyword">export type</span> <span class="hljs-title">ModelThinkingLevel</span> = <span class="hljs-string">"off"</span> | ThinkingLevel;</code></pre>
+
+<p>消费方只需传 <code>SimpleStreamOptions.reasoning?: ThinkingLevel</code>。</p>
+
+<h4>第二层：<code>thinkingLevelMap</code> 模型级映射</h4>
+
+<p>每个 <code>Model</code> 可包含 <code>thinkingLevelMap</code>，将 pi 的统一层级映射到提供商特定值：</p>
+
+<pre><code><span class="hljs-keyword">export type</span> <span class="hljs-title">ThinkingLevelMap</span> = Partial&lt;Record&lt;ModelThinkingLevel, <span class="hljs-built_in">string</span> | <span class="hljs-literal">null</span>&gt;&gt;;
+
+<span class="hljs-comment">// 示例：OpenAI o3</span>
+{ off: <span class="hljs-string">"none"</span>, minimal: <span class="hljs-string">"low"</span>, low: <span class="hljs-string">"low"</span>, medium: <span class="hljs-string">"medium"</span>, high: <span class="hljs-string">"high"</span>, xhigh: <span class="hljs-string">"high"</span>, max: <span class="hljs-string">"max"</span> }
+
+<span class="hljs-comment">// 示例：DeepSeek</span>
+{ off: <span class="hljs-literal">null</span> }  <span class="hljs-comment">// null = 不支持关闭</span></code></pre>
+
+<p><code>clampThinkingLevel()</code> 根据模型的可用层级将请求层级约束到最近的已支持值。</p>
+
+<h4>第三层：<code>thinkingFormat</code> 策略分发</h4>
+
+<p>在 <code>openai-completions.ts</code> 的 <code>buildParams()</code> 中，根据模型配置的 <code>compat.thinkingFormat</code> 分支到不同逻辑，支持 10+ 格式变体：</p>
+
+<pre><code><span class="hljs-keyword">if</span> (compat.thinkingFormat === <span class="hljs-string">"zai"</span> &amp;&amp; model.reasoning) {
+    params.thinking = reasoningEffort ? { type: <span class="hljs-string">"enabled"</span> } : { type: <span class="hljs-string">"disabled"</span> };
+} <span class="hljs-keyword">else if</span> (compat.thinkingFormat === <span class="hljs-string">"deepseek"</span> &amp;&amp; model.reasoning) {
+    params.thinking = reasoningEffort ? { type: <span class="hljs-string">"enabled"</span> } : { type: <span class="hljs-string">"disabled"</span> };
+    <span class="hljs-keyword">if</span> (reasoningEffort) params.reasoning_effort = mappedEffort;
+} <span class="hljs-keyword">else if</span> (compat.thinkingFormat === <span class="hljs-string">"openrouter"</span> &amp;&amp; model.reasoning) {
+    params.reasoning = { effort: mappedEffort ?? <span class="hljs-string">"none"</span> };
+} <span class="hljs-keyword">else if</span> (<span class="hljs-comment">/* ... */</span>) {
+    <span class="hljs-comment">// ... 各分支</span>
+}</code></pre>
+
+<h4>响应端统一</h4>
+
+<p>无论后端如何返回推理内容，所有适配器都转为统一的 <code>ThinkingContent</code>：</p>
+
+<pre><code>{ type: <span class="hljs-string">"thinking"</span>, thinking: <span class="hljs-string">"..."</span>, thinkingSignature: JSON.stringify(original), redacted?: <span class="hljs-literal">boolean</span> }</code></pre>
+
+<p>并发射 <code>thinking_start</code> / <code>thinking_delta</code> / <code>thinking_end</code> 事件。</p>
+
+<hr>
+
+<h2 id="cache">4. Prompt Cache 统一</h2>
+
+<h3>差异点</h3>
+
+<table>
+<tr><th>提供商</th><th>机制</th><th>粒度</th><th>长缓存</th></tr>
+<tr><td>Anthropic</td><td><code>cache_control: { type: "ephemeral" }</code> 标记到 content block</td><td>content block 级</td><td><code>ttl: "1h"</code></td></tr>
+<tr><td>OpenAI Responses</td><td><code>prompt_cache_key</code> + <code>prompt_cache_retention</code></td><td>整个输入级</td><td><code>"24h"</code></td></tr>
+<tr><td>OpenAI Chat Completions</td><td><code>prompt_cache_key</code> + <code>prompt_cache_retention</code></td><td>整个输入级</td><td><code>"24h"</code></td></tr>
+<tr><td>Anthropic-compatible 第三方</td><td><code>cache_control</code> 标记</td><td>content block 级</td><td>可选 1h</td></tr>
+<tr><td>OpenAI 第三方（Fireworks 等）</td><td><code>prompt_cache_key</code> + session affinity</td><td>整个输入 + 路由</td><td></td></tr>
+</table>
+
+<h3>统一方式</h3>
+
+<h4>统一开关</h4>
+
+<pre><code><span class="hljs-keyword">export type</span> <span class="hljs-title">CacheRetention</span> = <span class="hljs-string">"none"</span> | <span class="hljs-string">"short"</span> | <span class="hljs-string">"long"</span>;</code></pre>
+
+<p>各适配器从 <code>options.cacheRetention</code> 读取偏好，映射到本地语义。</p>
+
+<h4>Anthropic 风格实现</h4>
+
+<p>在 <code>anthropic-messages.ts</code> 中，<code>cacheControl</code> 按三条规则注入：</p>
+
+<ol>
+<li><strong>System prompt</strong> 的 text content block 加 <code>cache_control</code></li>
+<li><strong>最后一条工具定义</strong>（<code>tools</code> 数组最后一个）加 <code>cache_control</code></li>
+<li><strong>最后一条 user/assistant/tool-result 消息</strong>的最后一个 text block 加 <code>cache_control</code></li>
+</ol>
+
+<p><code>long</code> 时加 <code>ttl: "1h"</code>。</p>
+
+<h4>OpenAI 风格实现</h4>
+
+<pre><code><span class="hljs-comment">// openai-completions.ts / openai-responses.ts</span>
+params.prompt_cache_key = clampOpenAIPromptCacheKey(options?.sessionId);
+params.prompt_cache_retention = cacheRetention === <span class="hljs-string">"long"</span> ? <span class="hljs-string">"24h"</span> : <span class="hljs-keyword">undefined</span>;</code></pre>
+
+<p><code>clampOpenAIPromptCacheKey</code> 将 sessionId 裁剪到 64 字符。</p>
+
+<h4>交叉兼容</h4>
+
+<p>有些 OpenAI 兼容提供商采用 Anthropic 的 <code>cache_control</code> 方式。<code>openai-completions.ts</code> 的 <code>applyAnthropicCacheControl()</code> 在参数构建后，按 Anthropic 规则为已构建的 OpenAI 格式消息注入 <code>cache_control</code>。</p>
+
+<h4>Session affinity</h4>
+
+<p>部分提供商需要请求路由到同一副本。统一的 <code>sessionId</code> 通过不同 header 发送：</p>
+
+<ul>
+<li>OpenAI: <code>session_id</code> + <code>x-client-request-id</code></li>
+<li>OpenRouter: <code>x-session-id</code></li>
+<li>Fireworks Anthropic: <code>x-session-affinity</code></li>
+<li>通过 <code>sendSessionAffinityHeaders</code> 配置控制</li>
+</ul>
+
+<h4>使用统计统一</h4>
+
+<p><code>Usage</code> 统一包含缓存字段：</p>
+
+<pre><code><span class="hljs-keyword">export interface</span> <span class="hljs-title">Usage</span> {
+    cacheRead: <span class="hljs-built_in">number</span>;
+    cacheWrite: <span class="hljs-built_in">number</span>;
+    cacheWrite1h?: <span class="hljs-built_in">number</span>;  // Anthropic 独有，按 2x 计费
+}</code></pre>
+
+<p>各适配器从后端原生字段提取：</p>
+
+<table>
+<tr><th>后端</th><th>cacheRead</th><th>cacheWrite</th></tr>
+<tr><td>Anthropic</td><td><code>usage.cache_read_input_tokens</code></td><td><code>usage.cache_creation_input_tokens</code></td></tr>
+<tr><td>OpenAI Responses</td><td><code>usage.input_tokens_details.cached_tokens</code></td><td><code>usage.input_tokens_details.cache_write_tokens</code></td></tr>
+<tr><td>OpenAI Chat Completions</td><td><code>usage.prompt_tokens_details.cached_tokens</code></td><td>（无直接字段）</td></tr>
+</table>
+
+<hr>
+
+<h2 id="adapter">Adapter 模式详解</h2>
+
+<p>每个 API 适配器是一个独立模块，通过 <code>lazyApi()</code> 延迟加载，通过 <code>createProvider()</code> 注册到模型系统。</p>
+
+<pre><code>@earendil-works/pi-ai
+&#x251C;&#x2500;&#x2500; api/
+&#x2502;   &#x251C;&#x2500;&#x2500; anthropic-messages.ts     &larr; Anthropic 适配器（含自有 SSE parser）
+&#x2502;   &#x251C;&#x2500;&#x2500; openai-responses.ts       &larr; OpenAI Responses 适配器
+&#x2502;   &#x251C;&#x2500;&#x2500; openai-completions.ts     &larr; OpenAI Chat Completions 适配器
+&#x2502;   &#x251C;&#x2500;&#x2500; bedrock-converse-stream.ts
+&#x2502;   &#x251C;&#x2500;&#x2500; google-generative-ai.ts
+&#x2502;   &#x251C;&#x2500;&#x2500; google-vertex.ts
+&#x2502;   &#x251C;&#x2500;&#x2500; mistral-conversations.ts
+&#x2502;   &#x251C;&#x2500;&#x2500; azure-openai-responses.ts
+&#x2502;   &#x251C;&#x2500;&#x2500; openai-codex-responses.ts
+&#x2502;   &#x251C;&#x2500;&#x2500; pi-messages.ts
+&#x2502;   &#x251C;&#x2500;&#x2500; cloudflare.ts
+&#x2502;   &#x251C;&#x2500;&#x2500; lazy.ts                   &larr; lazyApi() 动态加载包装器
+&#x2502;   &#x251C;&#x2500;&#x2500; transform-messages.ts     &larr; 共享消息预处理
+&#x2502;   &#x251C;&#x2500;&#x2500; simple-options.ts         &larr; 通用选项构造
+&#x2502;   &#x251C;&#x2500;&#x2500; constrained-sampling.ts   &larr; JSON schema / grammar 约束采样
+&#x2502;   &#x2514;&#x2500;&#x2500; openai-prompt-cache.ts    &larr; cache key 裁剪
+&#x251C;&#x2500;&#x2500; providers/
+&#x2502;   &#x251C;&#x2500;&#x2500; anthropic.ts              &larr; Anthropic 提供商标记（模型目录 + API 绑定）
+&#x2502;   &#x251C;&#x2500;&#x2500; openai.ts
+&#x2502;   &#x251C;&#x2500;&#x2500; deepseek.ts
+&#x2502;   &#x2514;&#x2500;&#x2500; ...（每个提供商一个文件）
+&#x2514;&#x2500;&#x2500; types.ts                     &larr; 统一数据模型</code></pre>
+
+<p><strong>适配器契约</strong>：每个 API 模块必须导出 <code>stream</code> 和 <code>streamSimple</code>（符合 <code>ProviderStreams</code> 接口）。<code>lazyApi()</code> 包装器确保模块在首次调用时才加载，import 缓存去重负载。</p>
+
+<p><strong>提供商标记</strong>：每个 <code>providers/*.ts</code> 文件通过 <code>createProvider()</code> 注册，绑定：ID、名称、baseUrl、认证方式、模型目录、API 实现。</p>
+
+<hr>
+
+<h2 id="summary">总结</h2>
+
+<p><code>packages/ai</code> 通过四层抽象解决 LLM 提供商差异：</p>
+
+<table>
+<tr><th>抽象层面</th><th>解决什么问题</th><th>核心机制</th></tr>
+<tr><td><strong>统一数据类型</strong></td><td>各 API 的消息/工具/用量格式不同</td><td><code>AssistantMessage</code>, <code>ToolCall</code>, <code>Usage</code> 等收敛类型</td></tr>
+<tr><td><strong>统一流协议</strong></td><td>各 API 的 SSE 事件不同</td><td><code>AssistantMessageEventStream</code> + 12 种事件类型</td></tr>
+<tr><td><strong>统一 thinking 映射</strong></td><td>thinking 参数名/值/启用方式各异</td><td><code>thinkingLevelMap</code> + <code>thinkingFormat</code> 策略 + 层级枚举</td></tr>
+<tr><td><strong>统一缓存控制</strong></td><td>缓存机制/粒度/时长不同</td><td><code>CacheRetention</code> + 双风格（Anthropic 标记 / OpenAI prompt key）</td></tr>
+</table>
+
+</body>
+</html>

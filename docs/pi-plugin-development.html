@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pi 插件开发指南</title>
+<style>
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  background: #f5faf6;
+  color: #2d3a31;
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+a { color: #2d7a5a; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+h1 { font-size: 1.35em; margin: 28px 0 12px; color: #1a2b22; }
+h2 { font-size: 1.2em; margin: 24px 0 10px; color: #1a2b22; border-bottom: 1px solid #c3dbcc; padding-bottom: 4px; }
+h3 { font-size: 1.02em; margin: 18px 0 8px; color: #1a2b22; }
+h4 { font-size: 0.95em; margin: 14px 0 6px; color: #1a2b22; }
+
+p { margin: 6px 0; }
+ul, ol { margin: 4px 0; padding-left: 22px; }
+li { margin: 2px 0; }
+
+blockquote {
+  margin: 10px 0;
+  padding: 8px 14px;
+  background: #e8f5ec;
+  border-left: 3px solid #2d7a5a;
+  color: #3d5a4a;
+}
+blockquote p { margin: 0; }
+
+code {
+  font-size: 0.88em;
+  background: #e0efe5;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace;
+}
+pre {
+  font-size: 0.8em;
+  background: #e0efe5;
+  padding: 10px 14px;
+  border-radius: 5px;
+  overflow-x: auto;
+  border: 1px solid #c3dbcc;
+  line-height: 1.5;
+}
+pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #c3dbcc;
+  margin: 24px 0;
+}
+
+table {
+  font-size: 0.9em;
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+}
+th, td {
+  border: 1px solid #c3dbcc;
+  padding: 5px 8px;
+  text-align: left;
+}
+th {
+  background: #d4ede0;
+  font-weight: 600;
+}
+tr:nth-child(even) { background: #edf8f0; }
+tr:nth-child(odd) { background: #f5faf6; }
+
+.toc {
+  background: #e8f5ec;
+  border: 1px solid #c3dbcc;
+  border-radius: 8px;
+  padding: 14px 20px;
+  margin: 12px 0 16px;
+}
+.toc h2 { font-size: 1em; color: #1a4f2e; margin: 0 0 8px; border: none; padding: 0; background: none; }
+.toc > ol { margin: 0; list-style: none; counter-reset: toc; }
+.toc > ol > li { counter-increment: toc; margin: 3px 0; }
+.toc > ol > li::before { content: counter(toc) ". "; font-weight: 600; color: #1a4f2e; }
+.toc a { color: #236b3e; text-decoration: none; font-size: 0.9em; }
+.toc a:hover { text-decoration: underline; color: #1a4f2e; }
+
+.nav { margin-bottom: 20px; font-size: 0.9em; }
+.nav a { display: inline-block; margin-right: 10px; }
+
+.footer {
+  margin-top: 32px;
+  padding-top: 12px;
+  border-top: 1px solid #c3dbcc;
+  font-size: 0.85em;
+  color: #7a9a8a;
+}
+</style>
+</head>
+<body>
+
+<div class="nav"><a href="index.html">&larr; 文档索引</a></div>
+
+<h1>Pi 插件开发指南</h1>
+
+<blockquote>
+本文档讲解 Pi 的插件系统架构，以及如何为你当前的 Pi agent 开发可分享的插件。通过对比多个已安装的第三方插件，帮助你理解每种扩展机制的作用与使用场景。
+</blockquote>
+
+<hr>
+
+<h2 id="toc">目录</h2>
+
+<div class="toc">
+  <ol>
+    <li><a href="#pi-的四种扩展机制">Pi 的四种扩展机制</a></li>
+    <li><a href="#extension扩展--最灵活的钩子系统">Extension（扩展）—— 最灵活的钩子系统</a></li>
+    <li><a href="#skill技能--可复用的能力包">Skill（技能）—— 可复用的能力包</a></li>
+    <li><a href="#prompt-template提示模板--斜杠命令工厂">Prompt Template（提示模板）—— 斜杠命令工厂</a></li>
+    <li><a href="#theme主题--定制-tui-外观">Theme（主题）—— 定制 TUI 外观</a></li>
+    <li><a href="#package包--打包分享所有资源">Package（包）—— 打包分享所有资源</a></li>
+    <li><a href="#案例对比三个已安装插件">案例对比：三个已安装插件</a></li>
+    <li><a href="#快速上手从零开发一个插件">快速上手：从零开发一个插件</a></li>
+    <li><a href="#总结与最佳实践">总结与最佳实践</a></li>
+  </ol>
+</div>
+
+<hr>
+
+<h2 id="pi-的四种扩展机制">Pi 的四种扩展机制</h2>
+
+<p>Pi 的核心设计哲学是：<strong>Adapt pi to your workflows, not the other way around</strong>。你不需要 fork 和修改 Pi 的源代码，而是通过四种扩展机制来定制行为：</p>
+
+<table>
+<thead>
+<tr><th>机制</th><th>作用</th><th>分享方式</th><th>复杂度</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Extension</strong></td><td>注册工具、拦截事件、自定义 UI、注册命令</td><td>Package 或直接文件</td><td>&#9733;&#9733;&#9733;</td></tr>
+<tr><td><strong>Skill</strong></td><td>按需加载的专业能力（含脚本和文档）</td><td>Package 或 directory</td><td>&#9733;&#9733;</td></tr>
+<tr><td><strong>Prompt Template</strong></td><td>可复用的斜杠命令（如 <code>/review</code>）</td><td>Package 或文件</td><td>&#9733;</td></tr>
+<tr><td><strong>Theme</strong></td><td>定制终端 UI 颜色和样式</td><td>Package 或文件</td><td>&#9733;</td></tr>
+</tbody>
+</table>
+
+<p>这四个机制可以<strong>独立使用</strong>，也可以<strong>打包成一个 Package</strong> 统一分发。</p>
+
+<hr>
+
+<h2 id="extension扩展--最灵活的钩子系统">Extension（扩展）—— 最灵活的钩子系统</h2>
+
+<p>Extension 是 Pi 最强大的扩展机制。它是一个 TypeScript 模块，导出默认工厂函数，可以：</p>
+
+<h3>可扩展的能力</h3>
+
+<h4 id="自定义工具custom-tools">1. 自定义工具（Custom Tools）</h4>
+<p>向 LLM 注册新的可调用工具，让 agent 具备新能力。</p>
+
+<pre><code>pi.registerTool({
+  name: "greet",
+  label: "Greet",
+  description: "Greet someone by name",
+  parameters: Type.Object({
+    name: Type.String({ description: "Name to greet" }),
+  }),
+  async execute(toolCallId, params, signal, onUpdate, ctx) {
+    return {
+      content: [{ type: "text", text: `Hello, ${params.name}!` }],
+      details: {},
+    };
+  },
+});</code></pre>
+
+<h4 id="事件拦截event-hooks">2. 事件拦截（Event Hooks）</h4>
+<p>在 Pi 生命周期的各个阶段插入处理逻辑，可以<strong>阻塞</strong>或<strong>修改</strong>行为。</p>
+
+<table>
+<thead>
+<tr><th>事件</th><th>触发时机</th><th>可做操作</th></tr>
+</thead>
+<tbody>
+<tr><td><code>tool_call</code></td><td>工具执行前</td><td>拦截危险命令、修改参数</td></tr>
+<tr><td><code>tool_result</code></td><td>工具执行后</td><td>修改结果、追加摘要</td></tr>
+<tr><td><code>input</code></td><td>用户输入后</td><td>拦截、转换、路由</td></tr>
+<tr><td><code>context</code></td><td>每次 LLM 调用前</td><td>过滤/修改消息</td></tr>
+<tr><td><code>before_agent_start</code></td><td>agent 启动前</td><td>注入消息、修改 system prompt</td></tr>
+<tr><td><code>session_start</code> / <code>session_shutdown</code></td><td>会话生命周期</td><td>初始化/清理资源</td></tr>
+<tr><td><code>project_trust</code></td><td>项目信任决策</td><td>控制信任流程</td></tr>
+</tbody>
+</table>
+
+<p>典型例子——拦截 <code>rm -rf</code> 命令：</p>
+
+<pre><code>pi.on("tool_call", async (event, ctx) => {
+  if (event.toolName === "bash" && event.input.command?.includes("rm -rf")) {
+    const ok = await ctx.ui.confirm("Dangerous!", "Allow rm -rf?");
+    if (!ok) return { block: true, reason: "Blocked by user" };
+  }
+});</code></pre>
+
+<h4 id="自定义命令custom-commands">3. 自定义命令（Custom Commands）</h4>
+<p>注册斜杠命令，如 <code>/mycommand</code>：</p>
+
+<pre><code>pi.registerCommand("hello", {
+  description: "Say hello",
+  handler: async (args, ctx) => {
+    ctx.ui.notify(`Hello ${args || "world"}!`, "info");
+  },
+});</code></pre>
+
+<h4 id="用户交互user-interaction">4. 用户交互（User Interaction）</h4>
+<p>通过 <code>ctx.ui</code> 与用户交互：</p>
+
+<table>
+<thead>
+<tr><th>方法</th><th>用途</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ctx.ui.notify(msg, level)</code></td><td>通知提示</td></tr>
+<tr><td><code>ctx.ui.confirm(title, msg)</code></td><td>确认对话框</td></tr>
+<tr><td><code>ctx.ui.select(title, options)</code></td><td>选择菜单</td></tr>
+<tr><td><code>ctx.ui.input(title, placeholder)</code></td><td>文本输入</td></tr>
+<tr><td><code>ctx.ui.setStatus(key, text)</code></td><td>底部状态栏</td></tr>
+<tr><td><code>ctx.ui.setWidget(key, lines)</code></td><td>编辑器上方 widget</td></tr>
+</tbody>
+</table>
+
+<h4 id="会话持久化state-management">5. 会话持久化（State Management）</h4>
+<p>跨重启保存状态：</p>
+
+<pre><code>pi.appendEntry("my-extension", { key: "value" });
+// 在 session_start 中可读取</code></pre>
+
+<h4 id="自定义渲染custom-rendering">6. 自定义渲染（Custom Rendering）</h4>
+<p>控制工具调用和结果在 TUI 中的显示方式：</p>
+
+<pre><code>pi.registerTool({
+  name: "my_tool",
+  // ...
+  renderCall(toolCallId, params) { /* custom render */ },
+  renderResult(toolCallId, result) { /* custom render */ },
+});</code></pre>
+
+<h3 id="extension-的放置位置">Extension 的放置位置</h3>
+
+<table>
+<thead>
+<tr><th>位置</th><th>范围</th></tr>
+</thead>
+<tbody>
+<tr><td><code>~/.pi/agent/extensions/*.ts</code></td><td>全局（所有项目）</td></tr>
+<tr><td><code>~/.pi/agent/extensions/*/index.ts</code></td><td>全局（多文件）</td></tr>
+<tr><td><code>.pi/extensions/*.ts</code></td><td>项目级</td></tr>
+<tr><td><code>.pi/extensions/*/index.ts</code></td><td>项目级（多文件）</td></tr>
+</tbody>
+</table>
+
+<p>Extension 文件支持 TypeScript 直接写（通过 jiti 运行时编译），也可以用 <code>package.json</code> 管理依赖。</p>
+
+<hr>
+
+<h2 id="skill技能--可复用的能力包">Skill（技能）—— 可复用的能力包</h2>
+
+<p>Skill 是遵循 <a href="https://agentskills.io/specification">Agent Skills 标准</a> 的自包含能力包。与 Extension 不同，Skill <strong>不写代码</strong>，而是通过 <code>SKILL.md</code> 文档指导 LLM 如何执行任务。</p>
+
+<h3 id="skill-的工作原理">Skill 的工作原理</h3>
+
+<ol>
+<li>启动时 Pi 扫描 skill 位置，提取名称和描述</li>
+<li>system prompt 中包含可用的 skill 列表（XML 格式）</li>
+<li>当任务匹配时，LLM 通过 <code>read</code> 加载完整的 <code>SKILL.md</code></li>
+<li>agent 按照 Skill 中的指令执行</li>
+</ol>
+
+<h3 id="skill-的结构">Skill 的结构</h3>
+
+<pre><code>my-skill/
+├── SKILL.md              # 必需：前导元数据 + 指令
+├── scripts/              # 辅助脚本
+│   └── process.sh
+├── references/           # 按需加载的详细文档
+│   └── api-reference.md
+└── assets/
+    └── template.json</code></pre>
+
+<h3 id="skillmd-格式">SKILL.md 格式</h3>
+
+<pre><code>---
+name: my-skill
+description: 描述这个技能做什么，什么时候用。要具体。
+---
+
+# My Skill
+
+## Setup
+首次使用前运行：
+```bash
+cd /path/to/skill && npm install
+```
+
+## Usage
+```bash
+./scripts/process.sh &lt;input&gt;
+```</code></pre>
+
+<h3 id="skill-的位置">Skill 的位置</h3>
+
+<table>
+<thead>
+<tr><th>位置</th><th>范围</th></tr>
+</thead>
+<tbody>
+<tr><td><code>~/.pi/agent/skills/</code></td><td>全局</td></tr>
+<tr><td><code>~/.agents/skills/</code></td><td>全局</td></tr>
+<tr><td><code>.pi/skills/</code></td><td>项目级（信任后）</td></tr>
+<tr><td><code>.agents/skills/</code></td><td>项目级及祖先目录</td></tr>
+</tbody>
+</table>
+
+<p>Skill 也可以作为 Package 的一部分安装。</p>
+
+<hr>
+
+<h2 id="prompt-template提示模板--斜杠命令工厂">Prompt Template（提示模板）—— 斜杠命令工厂</h2>
+
+<p>Prompt Template 是最轻量的扩展方式。将一个 Markdown 文件放在 <code>~/.pi/agent/prompts/</code> 下，就可以通过 <code>/文件名</code> 快速调用。</p>
+
+<h3 id="基本模板">基本模板</h3>
+
+<pre><code>---
+description: 快速审查代码变更
+---
+
+审查以下代码变更，重点关注安全性、性能和可维护性：
+
+$@</code></pre>
+
+<p><code>$@</code> 会被替换为用户输入。运行 <code>/review 检查 auth 模块</code> 即可使用。</p>
+
+<hr>
+
+<h2 id="theme主题--定制-tui-外观">Theme（主题）—— 定制 TUI 外观</h2>
+
+<p>通过 CSS 变量定制 Pi 终端界面的颜色和样式。作为 Package 的一部分分享。</p>
+
+<hr>
+
+<h2 id="package包--打包分享所有资源">Package（包）—— 打包分享所有资源</h2>
+
+<p>Package 将 Extensions、Skills、Prompt Templates、Themes 打包成一个 npm 或 git 包，通过 <code>pi install</code> 安装。</p>
+
+<h3 id="package-的核心结构">Package 的核心结构</h3>
+
+<p>在 <code>package.json</code> 中用 <code>pi</code> 键声明资源：</p>
+
+<pre><code>{
+  "name": "my-package",
+  "pi": {
+    "extensions": ["./src/extension/index.ts"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
+  }
+}</code></pre>
+
+<h3 id="安装方式">安装方式</h3>
+
+<pre><code>pi install npm:@scope/pkg@1.0.0
+pi install git:github.com/user/repo@v1
+pi install ./local/path
+pi remove npm:@scope/pkg         # 卸载
+pi list                          # 查看已安装</code></pre>
+
+<h3 id="pi-的-package-生态系统">Pi 的 Package 生态系统</h3>
+
+<p>Pi 从三个来源加载包：</p>
+
+<table>
+<thead>
+<tr><th>来源</th><th>格式</th></tr>
+</thead>
+<tbody>
+<tr><td>npm</td><td><code>npm:@scope/pkg@version</code></td></tr>
+<tr><td>git</td><td><code>git:github.com/user/repo@ref</code></td></tr>
+<tr><td>本地</td><td>绝对路径或相对路径</td></tr>
+</tbody>
+</table>
+
+<hr>
+
+<h2 id="案例对比三个已安装插件">案例对比：三个已安装插件</h2>
+
+<p>下面以你当前环境中已安装的三个插件为例，分析它们分别扩展了 Pi 的哪些能力。</p>
+
+<h3 id="pi-prompt-template-model">pi-prompt-template-model</h3>
+
+<p><strong>一句话</strong>：让 Prompt Template 支持 <code>model</code>、<code>skill</code>、<code>thinking</code> 等前导元数据，每个斜杠命令变成一个自包含的 agent 模式。</p>
+
+<h4>安装方式</h4>
+
+<pre><code>pi install npm:pi-prompt-template-model</code></pre>
+
+<h4>扩展了什么</h4>
+
+<table>
+<thead>
+<tr><th>扩展点</th><th>具体做了什么</th><th>效果</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Extension</strong></td><td>注册了一个解析 prompt template 前导元数据的扩展</td><td>在 Pi 加载模板时，额外解析 <code>model</code>、<code>skill</code>、<code>thinking</code>、<code>subagent</code> 等字段</td></tr>
+<tr><td><strong>Event Hook: <code>input</code></strong></td><td>拦截斜杠命令，在执行前切换模型和加载 skill</td><td><code>/debug-python</code> 自动切换到 Sonnet 并注入 tmux 技能</td></tr>
+<tr><td><strong>Custom rendering</strong></td><td>提供 subagent 执行时的 TUI widget</td><td>实时显示子代理执行状态</td></tr>
+<tr><td><strong>Skill</strong></td><td>提供 <code>prompt-template-authoring</code> 技能</td><td>指导 LLM 如何编写带前导元数据的模板</td></tr>
+<tr><td><strong>Prompt 扫描</strong></td><td>扫描默认 prompt 目录和 settings 中的路径</td><td>确保所有模板都能被识别</td></tr>
+</tbody>
+</table>
+
+<h4>典型使用</h4>
+
+<pre><code>---
+description: 用 Sonnet 调试 Python
+model: claude-sonnet-4-20250514
+skill: tmux
+thinking: high
+---
+帮我调试这个 Python 问题：$@</code></pre>
+
+<p>运行 <code>/debug-python ...</code> &#8594; 自动切到 Sonnet + high thinking &#8594; 加载 tmux skill &#8594; 完成后自动恢复原模型。</p>
+
+<h4>扩展了什么能力</h4>
+
+<ul>
+<li><strong>新增功能</strong>：prompt template 的 frontmatter 解析（model/skill/thinking/loop/subagent 等 20+ 字段）</li>
+<li><strong>修改行为</strong>：斜杠命令执行前自动切换模型和 thinking 级别，执行后恢复</li>
+<li><strong>提供技能</strong>：prompt-template-authoring 技能指导 LLM 编写模板</li>
+<li><strong>TUI 增强</strong>：subagent widget 显示执行状态</li>
+</ul>
+
+<h3 id="pi-subagents">pi-subagents</h3>
+
+<p><strong>一句话</strong>：在 Pi 中引入子代理系统，支持代理链（chain）、并行执行（parallel）、后台任务（async）等高级编排模式。</p>
+
+<h4>安装方式</h4>
+
+<pre><code>pi install npm:pi-subagents</code></pre>
+
+<h4>扩展了什么</h4>
+
+<table>
+<thead>
+<tr><th>扩展点</th><th>具体做了什么</th><th>效果</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Extension (核心)</strong></td><td>注册 <code>subagent</code> 工具，实现子代理调度引擎</td><td>agent 可以调用 <code>subagent()</code> 委派任务给其他 agent</td></tr>
+<tr><td><strong>Custom Tool: <code>subagent</code></strong></td><td>注册新的 LLM 可调用工具</td><td>LLM 可以在 tool call 中派生子任务</td></tr>
+<tr><td><strong>Custom Command: <code>subagents</code></strong></td><td>注册 <code>/subagents</code> 命令</td><td>管理子代理：列出 agent、创建自定义 agent</td></tr>
+<tr><td><strong>Event Hook: <code>tool_call</code></strong></td><td>拦截特定输入触发子代理</td><td>实现 <code>/subagents-companions</code> 等自动化建议</td></tr>
+<tr><td><strong>Skill</strong></td><td>提供 <code>pi-subagents</code> 技能</td><td>指导 LLM 如何使用子代理工具</td></tr>
+<tr><td><strong>Prompt Templates</strong></td><td>提供预设 prompt 模板</td><td>快速调用子代理模式</td></tr>
+<tr><td><strong>TUI Custom Widget</strong></td><td>显示子代理执行进度</td><td>在 TUI 中可视化并行任务的进度</td></tr>
+</tbody>
+</table>
+
+<h4>典型使用</h4>
+
+<p><strong>Chain（链式执行）</strong>：</p>
+
+<pre><code>subagent({
+  chain: [
+    { agent: "planner", task: "为{task}制定计划" },
+    { agent: "worker", task: "按计划实现：{previous}" },
+    { agent: "reviewer", task: "审查实现：{previous}" }
+  ]
+})</code></pre>
+
+<p><strong>Parallel（并行执行）</strong>：</p>
+
+<pre><code>subagent({
+  tasks: [
+    { agent: "worker", task: "实现 module A" },
+    { agent: "worker", task: "实现 module B" },
+    { agent: "worker", task: "实现 module C" }
+  ],
+  concurrency: 3
+})</code></pre>
+
+<p><strong>Async（后台任务）</strong>：</p>
+
+<pre><code>subagent({
+  agent: "worker",
+  task: "长时间任务...",
+  async: true
+})</code></pre>
+
+<h4>扩展了什么能力</h4>
+
+<ul>
+<li><strong>新增工具</strong>：<code>subagent</code> —— 全新的 agent 编排能力</li>
+<li><strong>新增命令</strong>：<code>/subagents</code> —— agent 和 chain 管理</li>
+<li><strong>新增 agent 定义</strong>：内置 delegate / planner / worker / reviewer / oracle / researcher / scout / context-builder</li>
+<li><strong>新增 agent 模式</strong>：chain / parallel / async / fork-context</li>
+<li><strong>TUI 增强</strong>：执行进度 widget</li>
+<li><strong>Skill 指导</strong>：教 LLM 如何正确使用子代理</li>
+</ul>
+
+<h3 id="pi-intercom">pi-intercom</h3>
+
+<p><strong>一句话</strong>：让多个 Pi 会话之间可以互相通信，实现交叉会话协作。</p>
+
+<h4>安装方式</h4>
+
+<pre><code>pi install npm:pi-intercom</code></pre>
+
+<h4>扩展了什么</h4>
+
+<table>
+<thead>
+<tr><th>扩展点</th><th>具体做了什么</th><th>效果</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Extension</strong></td><td>注册 intercom 通信协议和管理工具</td><td>不同 Pi 终端可以互相收发消息</td></tr>
+<tr><td><strong>Custom Tool</strong></td><td>注册发给 LLM 的 intercom 工具</td><td>LLM 可以主动查询其他 Pi 会话</td></tr>
+<tr><td><strong>Event Hook</strong></td><td>监听 intercom 事件</td><td>在后台轮询和路由消息</td></tr>
+<tr><td><strong>后台进程</strong></td><td>启动 broker 中继进程</td><td>管理消息队列和会话发现</td></tr>
+<tr><td><strong>Skill</strong></td><td>提供 <code>pi-intercom</code> 技能</td><td>指导 LLM 如何使用 intercom 工具</td></tr>
+<tr><td><strong>TUI Widget</strong></td><td>显示消息通知</td><td>收到消息时在 TUI 中提示</td></tr>
+</tbody>
+</table>
+
+<h4>典型使用</h4>
+
+<pre><code># 在 session A 中
+intercom({ action: "send", to: "session-B", message: "请帮我审查这段代码" })
+intercom({ action: "ask", to: "session-B", message: "这个 API 怎么用？" })
+
+# 在 session B 中
+intercom({ action: "pending" })  # 查看未读消息
+intercom({ action: "reply", message: "代码审查结果..." })</code></pre>
+
+<h4>扩展了什么能力</h4>
+
+<ul>
+<li><strong>新增工具</strong>：<code>intercom</code> —— 跨会话通信工具</li>
+<li><strong>后台服务</strong>：broker 进程管理会话注册和消息路由</li>
+<li><strong>TUI 通知</strong>：收到消息时用户可见的通知</li>
+<li><strong>Skill 指导</strong>：教 LLM 如何使用跨会话通信</li>
+</ul>
+
+<h3 id="对比总结">对比总结</h3>
+
+<table>
+<thead>
+<tr><th>对比维度</th><th>pi-prompt-template-model</th><th>pi-subagents</th><th>pi-intercom</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>核心价值</strong></td><td>模板能力增强</td><td>子代理编排</td><td>跨会话通信</td></tr>
+<tr><td><strong>工具扩展</strong></td><td>—</td><td><code>subagent</code></td><td><code>intercom</code></td></tr>
+<tr><td><strong>命令扩展</strong></td><td>—</td><td><code>/subagents</code></td><td>—</td></tr>
+<tr><td><strong>事件钩子</strong></td><td><code>input</code> 拦截</td><td><code>tool_call</code> 拦截</td><td>intercom 事件</td></tr>
+<tr><td><strong>技能</strong></td><td><code>prompt-template-authoring</code></td><td><code>pi-subagents</code></td><td><code>pi-intercom</code></td></tr>
+<tr><td><strong>TUI 增强</strong></td><td>subagent widget</td><td>执行进度 widget</td><td>消息通知</td></tr>
+<tr><td><strong>后台进程</strong></td><td>—</td><td>—</td><td>broker</td></tr>
+<tr><td><strong>所有扩展点</strong></td><td>Extension + Skill</td><td>Extension + Skill + Prompt</td><td>Extension + Skill + 后台进程</td></tr>
+</tbody>
+</table>
+
+<p>可以看到，这三个插件的扩展侧重点完全不同：</p>
+
+<ul>
+<li><strong>pi-prompt-template-model</strong> 侧重「修改已有行为」—— 劫持 prompt 加载流程，注入元数据解析</li>
+<li><strong>pi-subagents</strong> 侧重「增加全新能力」—— 引入子代理编排范式，注册新工具和命令</li>
+<li><strong>pi-intercom</strong> 侧重「桥接外部系统」—— 跨进程通信，启动后台守护进程</li>
+</ul>
+
+<hr>
+
+<h2 id="快速上手从零开发一个插件">快速上手：从零开发一个插件</h2>
+
+<p>下面从零开始开发一个简单的 Pi 扩展，然后把它打包成 Package。</p>
+
+<h3 id="step-1-创建一个-extension">Step 1: 创建一个 Extension</h3>
+
+<pre><code>// ~/.pi/agent/extensions/greeter.ts
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+
+export default function (pi: ExtensionAPI) {
+  // 注册一个自定义工具
+  pi.registerTool({
+    name: "greet",
+    label: "Greet",
+    description: "Greet someone with a customizable message",
+    parameters: Type.Object({
+      name: Type.String({ description: "Name to greet" }),
+      style: Type.Optional(
+        Type.String({ description: "Style: casual, formal, or pirate" })
+      ),
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const styles: Record&lt;string, string&gt; = {
+        casual: `Hey ${params.name}! What's up?`,
+        formal: `Good day, ${params.name}. How may I assist you?`,
+        pirate: `Ahoy there, ${params.name}! Walk the plank!`,
+      };
+      const greeting = styles[params.style ?? "casual"] ?? styles.casual;
+      return {
+        content: [{ type: "text", text: greeting }],
+        details: { style: params.style ?? "casual" },
+      };
+    },
+  });
+
+  // 注册一个斜杠命令
+  pi.registerCommand("greeter-stats", {
+    description: "Show greeter tool usage",
+    handler: async (args, ctx) => {
+      ctx.ui.notify("Greeter extension loaded! Use greet tool.", "info");
+    },
+  });
+}</code></pre>
+
+<p>把文件放在 <code>~/.pi/agent/extensions/greeter.ts</code>，重启 Pi 即可看到效果。</p>
+
+<h3 id="step-2-打包成-package">Step 2: 打包成 Package</h3>
+
+<p>将扩展文件放入标准包结构中，添加 <code>package.json</code>：</p>
+
+<pre><code>greeter-pkg/
+├── package.json
+├── src/
+│   └── extension/
+│       └── index.ts        # 上一步写的扩展代码
+└── skills/
+    └── greeter/
+        └── SKILL.md         # 可选：添加 skill 指导</code></pre>
+
+<pre><code>{
+  "name": "greeter-pkg",
+  "version": "0.1.0",
+  "type": "module",
+  "files": ["src/**/*.ts", "skills/**/*"],
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./src/extension/index.ts"],
+    "skills": ["./skills"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}</code></pre>
+
+<h3 id="step-3-安装和使用">Step 3: 安装和使用</h3>
+
+<pre><code># 本地安装
+pi install ./greeter-pkg
+
+# 或发布到 npm 后
+pi install npm:greeter-pkg</code></pre>
+
+<h3 id="step-4-添加-skill-指导可选">Step 4: 添加 Skill 指导（可选）</h3>
+
+<pre><code>---
+name: greeter
+description: 提供个性化的问候能力，支持 casual / formal / pirate 三种风格
+---
+
+# Greeter Skill
+
+## 工具
+- `greet`: 发送问候消息，传入 name（必选）和 style（可选）
+
+## 使用场景
+- 用户说"打个招呼"时使用 greet 工具
+- 根据对话氛围选择合适的 style</code></pre>
+
+<hr>
+
+<h2 id="总结与最佳实践">总结与最佳实践</h2>
+
+<h3 id="如何选择扩展方式">如何选择扩展方式</h3>
+
+<table>
+<thead>
+<tr><th>你的需求</th><th>推荐方式</th></tr>
+</thead>
+<tbody>
+<tr><td>给 LLM 增加新能力（API 调用、外部服务）</td><td><strong>Extension</strong> &#8594; <code>registerTool</code></td></tr>
+<tr><td>拦截/修改现有行为（安全检查、日志）</td><td><strong>Extension</strong> &#8594; <code>pi.on("tool_call", ...)</code></td></tr>
+<tr><td>注册斜杠命令</td><td><strong>Extension</strong> &#8594; <code>registerCommand</code></td></tr>
+<tr><td>提供可复用的领域专业知识</td><td><strong>Skill</strong></td></tr>
+<tr><td>快速创建可复用的提示模板</td><td><strong>Prompt Template</strong></td></tr>
+<tr><td>搭配模型/技能切换的模板</td><td><strong>Prompt Template</strong> + pi-prompt-template-model</td></tr>
+<tr><td>子代理编排</td><td><strong>Package</strong> 依赖 pi-subagents</td></tr>
+<tr><td>分享给其他人</td><td><strong>Package</strong></td></tr>
+</tbody>
+</table>
+
+<h3 id="开发建议">开发建议</h3>
+
+<ol>
+<li><strong>从最小的扩展开始</strong>：先写一个单文件 extension，验证概念后再打包</li>
+<li><strong>利用事件钩子做安全检查</strong>：<code>tool_call</code> 是拦截危险操作的最佳位置</li>
+<li><strong>Skill 优先于 Extension</strong>：如果纯文档就能解决问题，不需要写代码</li>
+<li><strong>善用 <code>ctx.ui</code></strong>：TUI 交互方法让扩展不盲飞</li>
+<li><strong>关注 Pi 的文档</strong>：<code>docs/extensions.md</code>、<code>docs/skills.md</code>、<code>docs/packages.md</code> 是最权威的参考</li>
+</ol>
+
+<h3 id="关键参考">关键参考</h3>
+
+<table>
+<thead>
+<tr><th>文档</th><th>位置</th></tr>
+</thead>
+<tbody>
+<tr><td>Pi 扩展文档</td><td><code>/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md</code></td></tr>
+<tr><td>Pi 包文档</td><td><code>/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/packages.md</code></td></tr>
+<tr><td>Pi 技能文档</td><td><code>/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/skills.md</code></td></tr>
+<tr><td>扩展示例</td><td><code>/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/</code></td></tr>
+<tr><td>pi-subagents 源码</td><td><code>~/.pi/agent/npm/node_modules/pi-subagents/</code></td></tr>
+<tr><td>pi-prompt-template-model 源码</td><td><code>~/.pi/agent/npm/node_modules/pi-prompt-template-model/</code></td></tr>
+<tr><td>pi-intercom 源码</td><td><code>~/.pi/agent/npm/node_modules/pi-intercom/</code></td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+<p><a href="#toc">&#8593; 回到目录</a> &middot; <a href="index.html">&larr; 文档索引</a></p>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pi Coding Agent 架构分析 —— 如何组合 ai 和 agent 模块</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<style>
+body {
+    background: #f5faf6;
+    color: #2d3a31;
+    font: 13px/1.45 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px;
+}
+h1 { font-size: 1.35em; border-bottom: 2px solid #c3dbcc; padding-bottom: 8px; margin-top: 0; }
+h2 { font-size: 1.2em; margin: 24px 0 8px; padding: 6px 0; border-bottom: 1px solid #c3dbcc; }
+h3 { font-size: 1.02em; margin: 16px 0 6px; }
+h4 { font-size: 0.95em; margin: 10px 0 4px; }
+p { margin: 6px 0; }
+a { color: #1a7a3a; text-decoration: none; }
+a:hover { text-decoration: underline; }
+pre {
+    background: #e8f5ec;
+    border: 1px solid #c3dbcc;
+    border-radius: 4px;
+    padding: 10px 14px;
+    font: 0.8em/1.4 "SF Mono", "Fira Code", monospace;
+    overflow-x: auto;
+}
+code {
+    background: #e8f5ec;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.88em;
+}
+pre code { background: none; padding: 0; font-size: 1em; }
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9em;
+    margin: 8px 0;
+}
+th, td {
+    border: 1px solid #c3dbcc;
+    padding: 6px 10px;
+    text-align: left;
+}
+th { background: #e8f5ec; font-weight: 600; }
+blockquote {
+    border-left: 3px solid #c3dbcc;
+    margin: 10px 0;
+    padding: 4px 14px;
+    background: #e8f5ec;
+    border-radius: 2px;
+}
+ul, ol { margin: 4px 0; padding-left: 22px; }
+li { margin: 2px 0; }
+hr { border: none; border-top: 1px solid #c3dbcc; margin: 20px 0; }
+.toc {
+  background: #e8f5ec;
+  border: 1px solid #c3dbcc;
+  border-radius: 8px;
+  padding: 14px 20px;
+  margin: 12px 0 16px;
+}
+.toc h2 { font-size: 1em; color: #1a4f2e; margin: 0 0 8px; border: none; padding: 0; background: none; }
+.toc > ol { margin: 0; list-style: none; counter-reset: toc; }
+.toc > ol > li { counter-increment: toc; margin: 3px 0; }
+.toc > ol > li::before { content: counter(toc) ". "; font-weight: 600; color: #1a4f2e; }
+.toc a { color: #236b3e; text-decoration: none; font-size: 0.9em; }
+.toc a:hover { text-decoration: underline; color: #1a4f2e; }
+.card {
+    background: #e8f5ec;
+    border: 1px solid #c3dbcc;
+    border-radius: 8px;
+    padding: 14px 20px;
+    margin: 12px 0;
+}
+.layers {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.82em;
+    line-height: 1.5;
+    background: #e8f5ec;
+    border: 1px solid #c3dbcc;
+    border-radius: 6px;
+    padding: 6px 14px;
+    overflow-x: auto;
+    white-space: pre;
+}
+</style>
+</head>
+<body>
+
+<h1>Pi Coding Agent 架构分析 —— 如何组合 ai 和 agent 模块</h1>
+
+<blockquote>
+分析 <code>packages/coding-agent</code> 如何利用 <code>packages/ai</code>（模型抽象）和 <code>packages/agent</code>（通用 agent 框架）构建出完整的 coding agent 产品。核心关注：哪些类和接口被复用、哪些能力是 coding-agent 自己扩展的、整体分层关系。
+</blockquote>
+
+<div class="toc">
+<h2>目录</h2>
+<ol>
+<li><a href="#s0">包依赖关系</a></li>
+<li><a href="#s1">从 pi-ai 使用的类型和函数</a></li>
+<li><a href="#s2">从 pi-agent-core 使用的类型和类</a></li>
+<li><a href="#s3">coding-agent 的核心扩展</a></li>
+<li><a href="#s4">架构分层图</a></li>
+<li><a href="#s5">核心设计模式</a></li>
+<li><a href="#s6">总结</a></li>
+</ol>
+</div>
+
+<h2 id="s0">1. 包依赖关系</h2>
+
+<p>三个包按依赖方向从底层到上层排列：</p>
+
+<div class="card">
+<pre>pi-ai             (packages/ai)         — 纯模型抽象层，provider-agnostic
+  ↑
+pi-agent-core     (packages/agent)      — 通用 agent 循环框架，provider-agnostic
+  ↑
+pi-coding-agent   (packages/coding-agent) — 具体 coding agent 产品</pre>
+</div>
+
+<p><code>coding-agent</code> 的 <code>package.json</code> 中同时依赖了 <code>@earendil-works/pi-ai</code> 和 <code>@earendil-works/pi-agent-core</code>（注意 agent 包的 npm 名称是 <code>pi-agent-core</code>，目录是 <code>packages/agent</code>）。</p>
+
+<h2 id="s1">2. 从 pi-ai 使用的类型和函数</h2>
+
+<h3>核心数据模型</h3>
+<table>
+<tr><th>类型</th><th>用途</th><th>典型使用位置</th></tr>
+<tr><td><code>Model&lt;Api&gt;</code></td><td>模型元数据（provider、id、contextWindow、cost、thinking 支持等）</td><td><code>sdk.ts</code>、<code>agent-session.ts</code>、<code>model-runtime.ts</code></td></tr>
+<tr><td><code>Api</code></td><td>模型 API 协议标识（anthropic-messages、openai-responses 等）</td><td><code>model-runtime.ts</code>、<code>model-resolver.ts</code></td></tr>
+<tr><td><code>Provider</code></td><td>LLM 提供商元数据（名称、认证方式、模型列表）</td><td><code>model-runtime.ts</code>、<code>extensions/loader.ts</code></td></tr>
+<tr><td><code>Message</code> / <code>AssistantMessage</code></td><td>LLM 对话消息（user、assistant、toolResult）</td><td><code>messages.ts</code>、<code>agent-session.ts</code></td></tr>
+<tr><td><code>ImageContent</code> / <code>TextContent</code></td><td>多模态内容块</td><td>工具实现、模式层、消息转换</td></tr>
+<tr><td><code>Usage</code></td><td>token 使用统计（input/output/cacheRead/cacheWrite）</td><td><code>agent-session.ts</code>、<code>session-manager.ts</code></td></tr>
+<tr><td><code>Context</code></td><td>发送给模型的完整上下文（systemPrompt + messages + tools）</td><td><code>model-runtime.ts</code>、扩展系统</td></tr>
+</table>
+
+<h3>流与运行时</h3>
+<table>
+<tr><th>函数 / 类型</th><th>用途</th></tr>
+<tr><td><code>streamSimple</code></td><td>兼容层流函数，被注入为 agent-core 的默认 <code>StreamFn</code></td></tr>
+<tr><td><code>lazyStream</code></td><td>延迟解析的流，用于 provider lazy 注册</td></tr>
+<tr><td><code>SimpleStreamOptions</code></td><td>流请求选项（timeout、maxRetries、headers 等）</td></tr>
+<tr><td><code>AssistantMessageEventStream</code></td><td>流式响应的异步迭代器类型</td></tr>
+</table>
+
+<h3>模型管理与认证</h3>
+<table>
+<tr><th>函数 / 类型</th><th>用途</th></tr>
+<tr><td><code>createModels</code> / <code>ModelsStore</code></td><td>模型的集中注册、查询、刷新</td></tr>
+<tr><td><code>modelsAreEqual</code></td><td>模型等价性比较（用于模型切换检测）</td></tr>
+<tr><td><code>Credential</code> / <code>CredentialStore</code></td><td>API key / OAuth token 的持久化存储抽象</td></tr>
+<tr><td><code>AuthCheck</code> / <code>AuthResult</code></td><td>认证状态查询接口</td></tr>
+</table>
+
+<h3>工具函数</h3>
+<table>
+<tr><th>函数</th><th>用途</th></tr>
+<tr><td><code>contentText</code></td><td>从 <code>string | (TextContent | ImageContent)[]</code> 中提取纯文本</td></tr>
+<tr><td><code>clampThinkingLevel</code></td><td>根据模型能力裁剪 thinking level</td></tr>
+<tr><td><code>getSupportedThinkingLevels</code></td><td>查询模型支持的 thinking level 列表</td></tr>
+<tr><td><code>isContextOverflow</code></td><td>检测 context window 溢出</td></tr>
+<tr><td><code>isRetryableAssistantError</code></td><td>判断 assistant 错误是否可重试</td></tr>
+<tr><td><code>resetApiProviders</code></td><td>重置 provider 内部状态（会话切换时）</td></tr>
+<tr><td><code>uuidv7</code></td><td>生成唯一 ID（session、tool call 等）</td></tr>
+</table>
+
+<h2 id="s2">3. 从 pi-agent-core 使用的类型和类</h2>
+
+<h3>Agent 类 —— 最核心的复用</h3>
+
+<p><code>Agent</code> 是 agent-core 暴露的<strong>有状态 agent 循环包装器</strong>，coding-agent 在 <code>createAgentSession</code> 中直接实例化：</p>
+
+<pre><code>import { Agent } from "@earendil-works/pi-agent-core";
+
+agent = new Agent({
+    initialState: { systemPrompt, model, thinkingLevel, tools },
+    convertToLlm: convertToLlmWithBlockImages,
+    streamFn: async (model, context, options) => modelRuntime.streamSimple(model, context, options),
+    onPayload: ...,
+    onResponse: ...,
+    transformContext: ...,
+    steeringMode: ...,
+    followUpMode: ...,
+    thinkingBudgets: ...,
+    transport: ...,
+});</code></pre>
+
+<h3>Agent 暴露的控制面</h3>
+<table>
+<tr><th>成员 / 概念</th><th>类型</th><th>coding-agent 如何使用</th></tr>
+<tr><td><code>agent.state</code></td><td><code>AgentState</code></td><td>直接读写 systemPrompt、messages、tools、model、thinkingLevel</td></tr>
+<tr><td><code>agent.prompt()</code></td><td>方法</td><td>启动 agent 运行（发送 user message）</td></tr>
+<tr><td><code>agent.continue()</code></td><td>方法</td><td>在 post-agent-run 处理后继续</td></tr>
+<tr><td><code>agent.steer()</code></td><td>方法</td><td>运行中注入 steering 消息</td></tr>
+<tr><td><code>agent.followUp()</code></td><td>方法</td><td>运行中注入 follow-up 消息</td></tr>
+<tr><td><code>agent.subscribe()</code></td><td><code>(listener) => unsubscribe</code></td><td>监听全部 agent 事件（agent_start、turn_start、message_end 等）</td></tr>
+<tr><td><code>agent.abort()</code></td><td>方法</td><td>中止当前运行</td></tr>
+<tr><td><code>agent.beforeToolCall</code></td><td>hook 属性</td><td>coding-agent 注入扩展系统的 tool_call 拦截</td></tr>
+<tr><td><code>agent.afterToolCall</code></td><td>hook 属性</td><td>coding-agent 注入扩展系统的 tool_result 拦截</td></tr>
+<tr><td><code>agent.prepareNextTurnWithContext</code></td><td>hook 属性</td><td>coding-agent 注入 system prompt 和工具刷新逻辑</td></tr>
+<tr><td><code>agent.convertToLlm</code></td><td>属性</td><td>coding-agent 覆盖为带图片过滤的版本</td></tr>
+<tr><td><code>agent.hasQueuedMessages()</code></td><td>方法</td><td>检测 agent 内部队列是否还有待处理消息（决定是否 continue）</td></tr>
+</table>
+
+<h3>基础类型</h3>
+<table>
+<tr><th>类型</th><th>说明</th></tr>
+<tr><td><code>AgentState</code></td><td>agent 状态：systemPrompt、model、thinkingLevel、tools、messages、isStreaming 等</td></tr>
+<tr><td><code>AgentMessage</code></td><td>对话消息联合类型 = <code>Message | CustomAgentMessages[keyof CustomAgentMessages]</code></td></tr>
+<tr><td><code>AgentTool&lt;TParameters, TDetails&gt;</code></td><td>工具接口：name、description、parameters (TSchema)、label、execute、executionMode</td></tr>
+<tr><td><code>AgentEvent</code></td><td>agent 生命周期事件：agent_start/end、turn_start/end、message_start/update/end、tool_execution_*</td></tr>
+<tr><td><code>ThinkingLevel</code></td><td>推理等级："off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"</td></tr>
+<tr><td><code>StreamFn</code></td><td>流函数签名：<code>(model, context, options?) => AssistantMessageEventStream</code></td></tr>
+</table>
+
+<h3>声明合并</h3>
+<p>coding-agent 通过 TypeScript <a href="https://www.typescriptlang.org/docs/handbook/declaration-merging.html">declaration merging</a> 扩展 agent-core 的 <code>CustomAgentMessages</code> 接口：</p>
+
+<pre><code>// packages/coding-agent/src/core/messages.ts
+declare module "@earendil-works/pi-agent-core" {
+    interface CustomAgentMessages {
+        bashExecution: BashExecutionMessage;
+        compactionSummary: CompactionSummaryMessage;
+        branchSummary: BranchSummaryMessage;
+        custom: CustomMessage;
+        skillInvocation: SkillInvocationMessage;
+    }
+}</code></pre>
+
+<h2 id="s3">4. coding-agent 的核心扩展</h2>
+
+<h3>4.1 AgentSession —— 核心编排层</h3>
+<p><strong>文件</strong>：<code>core/agent-session.ts</code>（3328 行）</p>
+<p><code>AgentSession</code> 包裹一个 <code>Agent</code> 实例，在 agent-core 的通用循环之上叠加 coding-agent 专属能力：</p>
+
+<table>
+<tr><th>能力</th><th>实现方式</th></tr>
+<tr><td>会话持久化</td><td>通过 <code>SessionManager</code> 将 agent 消息写入 JSONL 文件；监听 <code>message_end</code> 事件自动保存</td></tr>
+<tr><td>上下文压缩 (compaction)</td><td>当 token 超限时触发；从 agent 状态提取消息、调用模型生成摘要、用摘要替换历史消息</td></tr>
+<tr><td>分支摘要 (branch summarization)</td><td>session fork / 分支切换时生成摘要，帮助模型理解历史上下文</td></tr>
+<tr><td>自动重试</td><td>根据 <code>RetrySettings</code> 对可重试错误延迟后重新运行</td></tr>
+<tr><td>Bash 执行</td><td><code>executeBash</code> 方法，执行后追加 <code>BashExecutionMessage</code> 到 agent state</td></tr>
+<tr><td>模型 / thinking 切换</td><td><code>setModel</code>、<code>cycleModel</code>、<code>setThinkingLevel</code>、<code>cycleThinkingLevel</code> —— 直接修改 <code>agent.state</code></td></tr>
+<tr><td>工具注册表</td><td>维护 <code>_toolRegistry</code>（AgentTool）、<code>_toolDefinitions</code>（ToolDefinition）、<code>_toolPromptSnippets</code>、<code>_toolPromptGuidelines</code></td></tr>
+<tr><td>系统 prompt 管理</td><td><code>_rebuildSystemPrompt</code> —— 根据活跃工具集、skills、context files 动态重建</td></tr>
+<tr><td>队列管理</td><td>steering / followUp 消息队列，通过 agent 的 queue API 注入（<code>agent.steer()</code> / <code>agent.followUp()</code>）</td></tr>
+<tr><td>扩展事件桥接</td><td>将 agent-core 事件映射到 coding-agent 扩展事件（<code>turn_start</code> → <code>TurnStartEvent</code> 等）</td></tr>
+</table>
+
+<h3>4.2 扩展系统 (Extension System)</h3>
+<p><strong>目录</strong>：<code>core/extensions/</code></p>
+
+<p>整套插件系统暴露 ~50 种自定义事件类型，核心组件：</p>
+
+<ul>
+<li><strong>ExtensionRunner</strong>：扩展加载、生命周期管理、事件分发</li>
+<li><strong>ExtensionAPI / ExtensionContext</strong>：给扩展暴露的 API（<code>pi.registerCommand</code>、<code>pi.sendMessage</code>、<code>pi.registerTool</code>、<code>pi.ui.*</code>、<code>pi.session.*</code>、<code>pi.exec.*</code> 等）</li>
+<li><strong>wrapRegisteredTools</strong>：将扩展注册的 tool 包装为带 sourceInfo 的 ToolDefinition</li>
+<li><strong>事件类型</strong>：<code>BeforeAgentStartEvent</code>、<code>BeforeProviderHeadersEvent</code>、<code>ToolCallEvent</code>、<code>SessionBeforeCompactEvent</code>、<code>InputEvent</code>、<code>ContextEvent</code> 等</li>
+</ul>
+
+<h3>4.3 工具系统</h3>
+<p><strong>目录</strong>：<code>core/tools/</code></p>
+
+<p>7 个内置工具，每个实现 <code>AgentTool&lt;TParameters, TDetails&gt;</code> 接口：</p>
+
+<table>
+<tr><th>工具名</th><th>文件</th><th>功能</th></tr>
+<tr><td><code>read</code></td><td><code>read.ts</code></td><td>读取文件（支持图片、行范围、符号查询）</td></tr>
+<tr><td><code>bash</code></td><td><code>bash.ts</code></td><td>执行 shell 命令</td></tr>
+<tr><td><code>edit</code></td><td><code>edit.ts</code></td><td>编辑文件（set_line、replace_lines、insert_after、replace）</td></tr>
+<tr><td><code>write</code></td><td><code>write.ts</code></td><td>创建或覆写文件</td></tr>
+<tr><td><code>grep</code></td><td><code>grep.ts</code></td><td>文本搜索</td></tr>
+<tr><td><code>find</code> / <code>ls</code></td><td><code>find.ts</code>、<code>ls.ts</code></td><td>文件查找与列表</td></tr>
+</table>
+
+<p>工厂函数 <code>createCodingTools()</code> / <code>createReadOnlyTools()</code> 组合这些工具并按需注入自定义 <code>cwd</code> 和 <code>operations</code>。</p>
+
+<h3>4.4 ModelRuntime —— 模型与认证运行时</h3>
+<p><strong>文件</strong>：<code>core/model-runtime.ts</code></p>
+
+<p>在 <code>pi-ai</code> 的 <code>createModels</code> + lazy provider 注册之上加入：</p>
+
+<ul>
+<li>内置 provider 目录（<code>@earendil-works/pi-ai/providers/all</code>）</li>
+<li>扩展注册的 providers（<code>validateExtensionProvider</code>）</li>
+<li>认证存储抽象（<code>AuthStorage</code> / <code>CredentialStore</code>）</li>
+<li>自定义模型配置叠加（<code>composeModelProvider</code>）</li>
+<li>远程模型目录（<code>withRemoteCatalog</code>）</li>
+<li>snapshot 查询（可用模型列表、已配置 provider 列表、认证状态）</li>
+</ul>
+
+<h3>4.5 SessionManager —— 会话持久化</h3>
+<p><strong>文件</strong>：<code>core/session-manager.ts</code></p>
+
+<p>基于 JSONL 文件的多分支会话持久化系统：</p>
+
+<ul>
+<li>支持分支（branch）/ 树导航</li>
+<li>条目类型：message、compaction、model change、thinking level change、custom message 等</li>
+<li>JSONL 格式，支持跨版本迁移（<code>migrateSessionEntries</code>）</li>
+<li>从 session 文件重建 AgentMessage 数组（<code>buildSessionContext</code>）</li>
+</ul>
+
+<h3>4.6 运行模式</h3>
+<p><strong>目录</strong>：<code>modes/</code></p>
+
+<table>
+<tr><th>模式</th><th>文件</th><th>用途</th></tr>
+<tr><td>Interactive</td><td><code>modes/interactive/interactive-mode.ts</code>（6000+ 行）</td><td>TUI 全功能交互模式</td></tr>
+<tr><td>Print</td><td><code>modes/print-mode.ts</code></td><td>单次 prompt → 输出（<code>pi -p "..."</code>）</td></tr>
+<tr><td>RPC</td><td><code>modes/rpc/</code></td><td>通过 JSON-RPC 暴露给外部 IDE 插件</td></tr>
+</table>
+
+<p>所有三种模式共享同一个 <code>AgentSession</code> 实例，差异仅在 I/O 层（TUI 组件树 vs. stdout 输出 vs. JSON-RPC 协议）。</p>
+
+<h2 id="s4">5. 架构分层图</h2>
+
+<pre class="layers">┌──────────────────────────────────────────────────────────────┐
+│                   Run Modes (I/O 适配层)                     │
+│  InteractiveMode   │   PrintMode   │   RpcClient (JSON-RPC)  │
+│  (TUI, keybindings, rendering, autocomplete)                 │
+├──────────────────────────────────────────────────────────────┤
+│               AgentSession (coding 编排层)                   │
+│  ┌───────────┐ ┌────────────┐ ┌──────────────────────────┐   │
+│  │ Compaction│ │ Auto-Retry │ │ Bash Execution           │   │
+│  │ Branch Sum│ │ Model Cycle│ │ SystemPrompt Generation  │   │
+│  └───────────┘ └────────────┘ └──────────────────────────┘   │
+│  ┌──────────────────────────────────────────────────────┐    │
+│  │        ExtensionRunner (插件系统)                      │    │
+│  │  ~50 种事件、命令注册、工具包装                         │    │
+│  └──────────────────────────────────────────────────────┘    │
+│  ┌───────────┐ ┌────────────────┐ ┌────────────────────┐    │
+│  │Tool Registry│ │ Session Mgr   │ │ Settings Mgr       │    │
+│  │(7 builtins) │ │ (JSONL tree)  │ │ (config layered)   │    │
+│  └───────────┘ └────────────────┘ └────────────────────┘    │
+├──────────────────────────────────────────────────────────────┤
+│           ModelRuntime (模型 + 认证运行时)                    │
+│  createModels + lazyStream + providers/all                   │
+│  + CredentialStore + ModelConfig compose                     │
+├────────────────────────────────┬─────────────────────────────┤
+│      pi-agent-core             │       pi-ai                  │
+│  ┌──────────────────┐         │  ┌──────────────────┐       │
+│  │ Agent (有状态     │         │  │ Model&lt;T&gt;, Api,   │       │
+│  │ loop 包装器)      │         │  │ Provider,         │       │
+│  │ AgentTool&lt;T&gt;     │         │  │ streamSimple,     │       │
+│  │ AgentState        │         │  │ CredentialStore,  │       │
+│  │ AgentEvent        │         │  │ retry helpers     │       │
+│  │ StreamFn          │         │  └──────────────────┘       │
+│  └──────────────────┘         │                              │
+└──────────────────────────────────────────────────────────────┘</pre>
+
+<h2 id="s5">6. 核心设计模式</h2>
+
+<div class="card">
+<h3>组合而非继承</h3>
+<p>coding-agent <strong>不继承</strong> <code>Agent</code>，而是通过 <strong>组合</strong> 使用：</p>
+<ul>
+<li><code>AgentSession</code> 持有 <code>agent: Agent</code> 实例</li>
+<li>通过 <code>agent.subscribe()</code> 监听事件（内部处理 session 持久化、compaction 检查、扩展桥接）</li>
+<li>通过 <code>agent.state</code> 读写状态（model、messages、tools、thinkingLevel）</li>
+<li>通过 <code>agent.prompt()</code> / <code>agent.steer()</code> / <code>agent.followUp()</code> 注入消息</li>
+<li>通过 hook 属性注入自定义行为（<code>beforeToolCall</code>、<code>afterToolCall</code>、<code>prepareNextTurnWithContext</code>）</li>
+</ul>
+</div>
+
+<div class="card">
+<h3>Provider-Agnostic 设计</h3>
+<p><code>pi-agent-core</code> 通过 <code>StreamFn</code> 类型保持与具体 provider 解耦。coding-agent 在初始化时将 <code>pi-ai/compat</code> 的 <code>streamSimple</code> 注入：</p>
+<pre><code>// sdk.ts
+setDefaultStreamFn(streamSimple); // 注入默认流实现</code></pre>
+<p>agent-core 本身不 import <code>pi-ai/compat</code>，由上层 coding-agent 完成注入。</p>
+</div>
+
+<div class="card">
+<h3>声明合并扩展消息类型</h3>
+<p>agent-core 的 <code>AgentMessage</code> 通过 <code>CustomAgentMessages</code> 接口留出扩展点。coding-agent 使用 declaration merging 注入 5 种专属消息类型（<code>BashExecutionMessage</code>、<code>CompactionSummaryMessage</code> 等），这些消息在 agent 循环中被当作一等公民处理。</p>
+</div>
+
+<div class="card">
+<h3>事件驱动的双层监听</h3>
+<p>agent-core 发出 <code>AgentEvent</code>，<code>AgentSession._handleAgentEvent</code> 作为内部处理器做三件事：</p>
+<ol>
+<li>桥接到扩展系统（<code>_emitExtensionEvent</code>）</li>
+<li>转发给模式层（<code>_emit</code> → I/O 层 listener）</li>
+<li>执行内部逻辑（session 持久化、compaction 检测、retry 检测）</li>
+</ol>
+</div>
+
+<h2 id="s6">7. 总结</h2>
+
+<table>
+<tr><th>层次</th><th>包</th><th>职责</th><th>提供什么</th></tr>
+<tr>
+    <td>L0 模型层</td>
+    <td><code>pi-ai</code></td>
+    <td>纯数据与流抽象</td>
+    <td>Model、Provider、Api、Message、Usage、streamSimple、CredentialStore、工具函数</td>
+</tr>
+<tr>
+    <td>L1 Agent 框架</td>
+    <td><code>pi-agent-core</code></td>
+    <td>通用 agent 循环</td>
+    <td>Agent、AgentState、AgentTool、AgentEvent、StreamFn、ThinkingLevel、队列管理</td>
+</tr>
+<tr>
+    <td>L2 Coding 编排</td>
+    <td><code>coding-agent/core</code></td>
+    <td>Coding 专用逻辑</td>
+    <td>AgentSession、compaction、retry、bash execution、tool registry、system prompt、扩展系统、session 持久化、model runtime</td>
+</tr>
+<tr>
+    <td>L3 I/O 适配</td>
+    <td><code>coding-agent/modes</code></td>
+    <td>用户交互</td>
+    <td>InteractiveMode (TUI)、PrintMode (stdout)、RpcClient (JSON-RPC)</td>
+</tr>
+</table>
+
+<p>coding-agent 的核心价值在于 <strong>L2 编排层</strong>：它不重新发明 agent 循环或模型抽象，而是复用 <code>Agent</code> + <code>pi-ai</code> 的基础能力，通过组合、hook 注入和声明合并将通用 agent 框架转化为一个完整的 coding agent 产品。</p>
+
+<hr>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    renderMathInElement(document.body, {
+        delimiters: [
+            {left: "$$", right: "$$", display: true},
+            {left: "$", right: "$", display: false},
+        ]
+    });
+});
+</script>
+</body>
+</html>
